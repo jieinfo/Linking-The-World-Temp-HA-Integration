@@ -39,6 +39,10 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
         return "温控"
 
     @property
+    def update_scopes(self) -> frozenset[str]:
+        return super().update_scopes | {"room_controls"}
+
+    @property
     def current_temperature(self) -> float | None:
         return self.hub.thermostats[self.mac_hex].current_temperature
 
@@ -98,4 +102,6 @@ async def async_setup_entry(
         async_add_entities([RoomThermostat(hub, mac) for mac in new_macs])
 
     add_new_entities()
-    entry.async_on_unload(hub.async_add_listener(add_new_entities))
+    entry.async_on_unload(
+        hub.async_add_listener(add_new_entities, scopes={"discovery"})
+    )

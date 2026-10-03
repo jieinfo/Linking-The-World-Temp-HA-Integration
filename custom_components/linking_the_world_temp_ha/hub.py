@@ -154,7 +154,7 @@ class LinkingTempHub:
         self.parser_anomalies: list[dict[str, object]] = []
 
         self._client: AsyncMoorgenClient | None = None
-        self._listeners: set[Callable[[], None]] = set()
+        self._listeners: dict[Callable[[], None], frozenset[str] | None] = {}
         self._runner: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._command_lock = asyncio.Lock()
@@ -206,19 +206,27 @@ class LinkingTempHub:
         await self.panel_registry.async_flush()
 
     @callback
-    def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
-        self._listeners.add(listener)
+    def async_add_listener(
+        self,
+        listener: Callable[[], None],
+        *,
+        scopes: set[str] | frozenset[str] | None = None,
+    ) -> Callable[[], None]:
+        """Subscribe to selected state groups, or every event for transactions."""
+        self._listeners[listener] = frozenset(scopes) if scopes is not None else None
 
         @callback
         def remove_listener() -> None:
-            self._listeners.discard(listener)
+            self._listeners.pop(listener, None)
 
         return remove_listener
 
     @callback
-    def _notify(self) -> None:
-        for listener in tuple(self._listeners):
-            listener()
+    def _notify(self, *scopes: str) -> None:
+        """Broadcast lifecycle changes; otherwise notify only matching groups."""
+        for listener, subscribed in tuple(self._listeners.items()):
+            if not scopes or subscribed is None or not subscribed.isdisjoint(scopes):
+                listener()
 
     @property
     def available(self) -> bool:
@@ -331,39 +339,43 @@ class LinkingTempHub:
         """Select a mode, safely power-cycling an enabled system when required."""
         if mode not in MODE_VALUES:
             raise HomeAssistantError(f"不支持的运行模式: {mode}")
-        async with self._mode_transition_lock:
-            if self.state.mode == mode:
-                return
-            if self.state.power not in ("ON", "OFF"):
-                raise HomeAssistantError("科技系统总开关状态尚未确认")
-            if self._has_system_intent("power"):
-                raise HomeAssistantError(
-                    "总控开关状态正在变化，请稍后再切换模式"
-                )
+        try:
+            async with self._mode_transition_lock:
+                if self.state.mode == mode:
+                    return
+                if self.state.power not in ("ON", "OFF"):
+                    raise HomeAssistantError("科技系统总开关状态尚未确认")
+                if self._has_system_intent("power"):
+                    raise HomeAssistantError(
+                        "总控开关状态正在变化，请稍后再切换模式"
+                    )
 
-            restore_power = self.state.power == "ON"
-            if restore_power:
-                await self.async_set_system_power(False)
+                restore_power = self.state.power == "ON"
+                if restore_power:
+                    await self.async_set_system_power(False)
+                    await self._async_wait_for_system_value(
+                        "power",
+                        "OFF",
+                        "科技系统关闭未得到主机确认，模式切换已中止",
+                    )
+
+                await self.async_set_mode(mode)
                 await self._async_wait_for_system_value(
-                    "power",
-                    "OFF",
-                    "科技系统关闭未得到主机确认，模式切换已中止",
+                    "mode",
+                    mode,
+                    "模式切换未得到主机确认，科技系统保持关闭",
                 )
 
-            await self.async_set_mode(mode)
-            await self._async_wait_for_system_value(
-                "mode",
-                mode,
-                "模式切换未得到主机确认，科技系统保持关闭",
-            )
-
-            if restore_power:
-                await self.async_set_system_power(True)
-                await self._async_wait_for_system_value(
-                    "power",
-                    "ON",
-                    "模式已切换，但科技系统恢复开启未得到主机确认",
-                )
+                if restore_power:
+                    await self.async_set_system_power(True)
+                    await self._async_wait_for_system_value(
+                        "power",
+                        "ON",
+                        "模式已切换，但科技系统恢复开启未得到主机确认",
+                    )
+        finally:
+            # Write the hint after releasing the lock, not on a later status push.
+            self._notify("diagnostics")
 
     async def _async_wait_for_system_value(
         self, intent: str, expected: str, error_message: str
@@ -482,7 +494,7 @@ class LinkingTempHub:
                 self._queued.pop(target, None)
             self._record_command_queue_depth()
             self.last_command_status = f"confirmed:{label}"
-            self._notify()
+            self._notify("diagnostics")
             return True
 
     def _room_thermostat_block_reason(self) -> str | None:
@@ -937,7 +949,7 @@ class LinkingTempHub:
                 self._queued.pop(target, None)
                 self.last_command_status = f"waiting:{pending.label}"
             self._record_command_queue_depth()
-            self._notify()
+            self._notify("diagnostics")
             return
         if coalesce and not from_queue and self._queued.get(target):
             queued = coalesce_queued(None, self._queued[target], replacement)
@@ -953,19 +965,19 @@ class LinkingTempHub:
                 self._queued.pop(target, None)
                 self.last_command_status = f"confirmed:{label}"
                 self._record_command_queue_depth()
-                self._notify()
+                self._notify("diagnostics")
                 return
             self._queued[target] = queued
             self.last_command_status = f"queued:{label}"
             self.health.increment("commands_coalesced")
             self._record_command_queue_depth()
-            self._notify()
+            self._notify("diagnostics")
             return
         if target == "system" and self._matches_verified_system_state(expected):
             self.health.command_result(trace_id, "unchanged")
             self.last_command_status = f"confirmed:{label}"
             self._record_command_queue_depth()
-            self._notify()
+            self._notify("diagnostics")
             return
         now = time.monotonic()
         if self._last_command_at is not None:
@@ -993,7 +1005,7 @@ class LinkingTempHub:
         self._pending[target] = pending
         self._record_command_queue_depth()
         self.last_command_status = f"waiting:{label}"
-        self._notify()
+        self._notify("diagnostics")
         try:
             self.health.command_sent(trace_id)
             if send_guard is None:
@@ -1017,7 +1029,7 @@ class LinkingTempHub:
                 self._command_target_type(target),
                 command,
             )
-            self._notify()
+            self._notify("diagnostics")
             raise
 
     def _record_coalesced_history(
@@ -1062,7 +1074,7 @@ class LinkingTempHub:
                     self._command_target_type(queued.target),
                     queued.command,
                 )
-                self._notify()
+                self._notify("diagnostics")
 
     async def _async_poll_pending_status(self, now: float) -> None:
         """Request a fresh status report while commands await confirmation."""
@@ -1171,7 +1183,7 @@ class LinkingTempHub:
                     )
                 self._record_command_queue_depth()
         if expired:
-            self._notify()
+            self._notify("diagnostics")
 
     async def _async_retry_temperature_command(self, pending: PendingCommand) -> None:
         """Retry one unconfirmed thermostat setpoint without reporting failure yet."""
@@ -1228,7 +1240,7 @@ class LinkingTempHub:
             self.health.increment("ignored_statuses")
             return
         room_id = ""
-        changed = False
+        changed_rooms: set[str] = set()
         for tag, value in iter_tlvs(frame.body):
             if tag == 0x0030:
                 room_id = decode_text(value)
@@ -1236,12 +1248,20 @@ class LinkingTempHub:
                 name = decode_text(value)
                 if await self.panel_registry.async_set_room_name(room_id, name):
                     self.room_names[room_id] = name
-                    changed = True
-        if changed:
-            self._notify()
+                    changed_rooms.add(room_id)
+        scopes = {
+            f"thermostat_{mac_hex}"
+            for mac_hex, thermostat in self.thermostats.items()
+            if thermostat.room_id in changed_rooms
+        }
+        if scopes:
+            self._notify(*scopes)
 
     async def _async_status_received(self, body: bytes) -> None:
-        changed = False
+        scopes: set[str] = set()
+        was_verified = self.protocol_verified
+        previous_controls = (self.state.power, self.state.mode)
+        previous_command_status = self.last_command_status
         now_utc = datetime.now(UTC)
         now_monotonic = time.monotonic()
         if not is_complete_tlv_body(body):
@@ -1257,7 +1277,9 @@ class LinkingTempHub:
             for name, value in total.items():
                 if getattr(self.state, name) != value:
                     setattr(self.state, name, value)
-                    changed = True
+                    scopes.add("system")
+            if previous_controls != (self.state.power, self.state.mode):
+                scopes.add("room_controls")
             if self.state.system_fault_code is not None:
                 self.repairs.set_fault_code("system", self.state.system_fault_code)
             if self.state.filter_fault_code is not None:
@@ -1299,6 +1321,8 @@ class LinkingTempHub:
         if thermostat is not None:
             mac_hex = thermostat.mac.hex()
             previous = self.thermostats.get(mac_hex)
+            if previous is None:
+                scopes.add("discovery")
             await self.async_note_panel_report(
                 mac_hex,
                 thermostat.room_id,
@@ -1328,11 +1352,15 @@ class LinkingTempHub:
                     "power": thermostat.power,
                 },
             )
-            changed = True
+            scopes.add(f"thermostat_{mac_hex}")
         if not total and thermostat is None:
             self.health.increment("ignored_statuses")
-        if total or changed:
+        if previous_command_status != self.last_command_status:
+            scopes.add("diagnostics")
+        if was_verified != self.protocol_verified:
             self._notify()
+        elif scopes:
+            self._notify(*scopes)
 
     async def async_sync_stale_panel_repairs(self) -> None:
         """Expose each observed-thirty-day absence as one actionable Repair."""
@@ -1418,7 +1446,7 @@ class LinkingTempHub:
     async def _async_refresh_thermostat_availability(self, now: float) -> None:
         if self.thermostat_offline_after == 0:
             return
-        changed = False
+        scopes: set[str] = set()
         for thermostat in self.thermostats.values():
             if (
                 thermostat.available
@@ -1428,9 +1456,9 @@ class LinkingTempHub:
                 await self.panel_registry.async_set_panel_available(
                     thermostat.mac.hex(), False
                 )
-                changed = True
-        if changed:
-            self._notify()
+                scopes.add(f"thermostat_{thermostat.mac.hex()}")
+        if scopes:
+            self._notify(*scopes)
 
     async def _async_restore_panels(self) -> None:
         await self.panel_registry.async_load()

@@ -30,7 +30,7 @@ def _hub_with_health() -> LinkingTempHub:
     hub._queued = {}
     hub.thermostats = {}
     hub.filtered = {}
-    hub._listeners = set()
+    hub._listeners = {}
     hub._session_authenticated = False
     hub.host = "house-controller.lan"
     hub.username = "admin"

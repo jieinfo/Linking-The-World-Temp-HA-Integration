@@ -164,7 +164,7 @@ class ThermostatPolicyTests(unittest.TestCase):
             instance._command_lock = asyncio.Lock()
             instance._pending = {}
             instance._queued = {}
-            instance._listeners = set()
+            instance._listeners = {}
             instance.last_command_status = "idle"
             instance.command_min_interval = 0.02
             instance.command_confirmation_timeout = 8

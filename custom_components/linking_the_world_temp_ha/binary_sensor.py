@@ -27,6 +27,10 @@ class ControllerConnectionSensor(LinkingTempEntity, BinarySensorEntity):
         return self.hub.available
 
     @property
+    def update_scopes(self) -> frozenset[str]:
+        return frozenset({"diagnostics"})
+
+    @property
     def available(self) -> bool:
         return True
 
@@ -41,6 +45,10 @@ class ProtocolVerifiedSensor(LinkingTempEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         return self.hub.protocol_verified
+
+    @property
+    def update_scopes(self) -> frozenset[str]:
+        return frozenset({"diagnostics"})
 
     @property
     def available(self) -> bool:
