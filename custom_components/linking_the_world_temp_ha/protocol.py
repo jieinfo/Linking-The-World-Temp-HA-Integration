@@ -807,8 +807,10 @@ class AsyncMoorgenClient:
                         len(body),
                     )
         except TimeoutError as error:
-            self._ready = False
-            writer.transport.abort()
+            if self._writer is writer:
+                self._writer = None
+                self._ready = False
+                writer.transport.abort()
             raise ConnectionError("MC7021 socket write timed out") from error
 
     async def _wait_for(self, kind: int, opcode: int, timeout: float) -> YasHcpFrame:

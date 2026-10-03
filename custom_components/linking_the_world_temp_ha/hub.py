@@ -175,6 +175,7 @@ class LinkingTempHub:
         self._session_started_at: float | None = None
         self._system_status_query_at: float | None = None
         self._last_status_query_at: float | None = None
+        self._last_status_query_completed_at: float | None = None
 
     async def async_start(self) -> None:
         """Restore known panels and start the supervised TCP session."""
@@ -755,15 +756,6 @@ class LinkingTempHub:
         availability_at = 0.0
         while not self._stop.is_set() and client.reader_alive:
             now = time.monotonic()
-            last_status_at = self._last_valid_status_at
-            if (
-                last_status_at is not None
-                and now - last_status_at >= self.controller_silence_timeout
-            ):
-                raise ConnectionError(
-                    "MC7021 status stream has been silent for "
-                    f"{now - last_status_at:.0f} seconds"
-                )
             await self._async_poll_pending_status(now)
             await self._async_check_system_freshness(client, now)
             await self._async_expire_pending(now)
@@ -799,6 +791,10 @@ class LinkingTempHub:
                 self.health.increment("system_status_refresh_queries")
                 await client.request_status()
                 self._last_status_query_at = now
+                self._last_status_query_completed_at = time.monotonic()
+            # A response can clear the probe while drain/lock wait is in progress.
+            if self._system_status_query_at is not None:
+                self._system_status_query_at = self._last_status_query_completed_at
             return
         grace = max(10.0, self.command_confirmation_timeout)
         if now - self._system_status_query_at >= grace:
@@ -837,6 +833,7 @@ class LinkingTempHub:
         self._session_started_at = None
         self._system_status_query_at = None
         self._last_status_query_at = None
+        self._last_status_query_completed_at = None
         if was_authenticated:
             self.health.increment("disconnects")
         if panel_registry := getattr(self, "panel_registry", None):
@@ -1083,6 +1080,7 @@ class LinkingTempHub:
             self.health.command_queried(pending.trace_id)
         await self._client.request_status()
         self._last_status_query_at = now
+        self._last_status_query_completed_at = time.monotonic()
         for pending in due:
             pending.next_status_poll_at = now + STATUS_POLL_INTERVAL
         _LOGGER.debug(

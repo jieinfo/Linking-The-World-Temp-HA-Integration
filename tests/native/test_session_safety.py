@@ -11,6 +11,7 @@ from custom_components.linking_the_world_temp_ha import protocol
 from custom_components.linking_the_world_temp_ha.health import HealthTracker
 from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
 from custom_components.linking_the_world_temp_ha.protocol import AsyncMoorgenClient, tlv
+from custom_components.linking_the_world_temp_ha.runtime import ConnectionStage
 from tests.native.test_entities import _system_status, _thermostat_status
 
 
@@ -95,11 +96,32 @@ async def test_write_lock_wait_has_the_same_deadline(monkeypatch):
         client._write_lock.release()
 
 
-async def test_room_reports_do_not_refresh_total_status(hass, mock_config_entry):
+async def test_stalled_owner_prevents_queued_sender_writing_after_abort(monkeypatch):
+    client, writer = _stalled_client(monkeypatch)
+    entered = asyncio.Event()
+
+    async def drain():
+        entered.set()
+        await _stall()
+
+    writer.drain = AsyncMock(side_effect=drain)
+    owner = asyncio.create_task(client.heartbeat())
+    await entered.wait()
+    monkeypatch.setattr(protocol, "WRITE_TIMEOUT", 0.04)
+    queued = asyncio.create_task(client.send_command(protocol.TECH_SYSTEM_MAC, 2))
+    errors = await asyncio.gather(owner, queued, return_exceptions=True)
+    assert isinstance(errors[0], ConnectionError)
+    assert isinstance(errors[1], ConnectionError)
+    assert writer.write.call_count == 1
+    writer.transport.abort.assert_called_once()
+
+
+async def test_room_reports_do_not_refresh_total_status(hass, mock_config_entry, monkeypatch):
     hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
     hub.controller_silence_timeout = 30
     hub._last_system_status_at = 100.0
     hub._last_valid_status_at = 140.0
+    monkeypatch.setattr(hub_module, "time", SimpleNamespace(monotonic=lambda: 140.0))
     client = Mock()
     client.request_status = AsyncMock()
     await hub._async_check_system_freshness(client, 140.0)
@@ -115,6 +137,7 @@ async def test_pending_poll_can_satisfy_freshness_query(hass, mock_config_entry)
     hub.controller_silence_timeout = 30
     hub._last_system_status_at = 100.0
     hub._last_status_query_at = 140.0
+    hub._last_status_query_completed_at = 140.0
     client = Mock()
     client.request_status = AsyncMock()
     await hub._async_check_system_freshness(client, 140.0)
@@ -181,3 +204,54 @@ async def test_freshness_probe_disables_cached_command_shortcut(hass, mock_confi
     assert hub._matches_verified_system_state({"power": "ON"})
     hub._system_status_query_at = 100.0
     assert not hub._matches_verified_system_state({"power": "ON"})
+
+
+async def test_refresh_grace_starts_after_query_send_and_survives_whole_silence(
+    hass, mock_config_entry, monkeypatch
+):
+    hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
+    hub.controller_silence_timeout = 30
+    hub._session_started_at = 100.0
+    hub._last_system_status_at = 100.0
+    hub._last_valid_status_at = 100.0
+    clock = [140.0]
+    monkeypatch.setattr(hub_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    client = Mock()
+
+    async def query():
+        clock[0] += 7.0
+
+    client.request_status = AsyncMock(side_effect=query)
+    await hub._async_check_system_freshness(client, 140.0)
+    assert hub._system_status_query_at == 147.0
+    await hub._async_check_system_freshness(client, 151.0)
+    with pytest.raises(ConnectionError, match="total-system status"):
+        await hub._async_check_system_freshness(client, 157.0)
+
+
+async def test_session_loop_gives_whole_stream_silence_a_query_and_grace(
+    hass, mock_config_entry, monkeypatch
+):
+    hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
+    hub.controller_silence_timeout = 30
+    hub._last_system_status_at = 100.0
+    hub._last_valid_status_at = 100.0
+    hub.connected = True
+    hub.protocol_verified = True
+    hub.health.mark_stage(ConnectionStage.READY)
+    clock = [140.0]
+    monkeypatch.setattr(hub_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    client = Mock(reader_alive=True)
+    client.request_status = AsyncMock()
+
+    async def heartbeat():
+        clock[0] = 151.0
+
+    client.heartbeat = AsyncMock(side_effect=heartbeat)
+    monkeypatch.setattr(hub_module, "SESSION_IDLE_INTERVAL", 0.001)
+    with pytest.raises(ConnectionError, match="total-system status"):
+        await hub._async_session_loop(client)
+    client.request_status.assert_awaited_once()
+    await hub._async_disconnect()
+    assert not hub.available
+    assert hub.status_freshness()["system_status_age_seconds"] is None
