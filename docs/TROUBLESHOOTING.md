@@ -1,6 +1,6 @@
 # Linking The World Temp HA 故障排查
 
-本文适用于 HACS 集成 **Linking The World Temp HA 1.4.0**，最低支持
+本文适用于 HACS 集成 **Linking The World Temp HA 1.4.1**，最低支持
 Home Assistant `2026.9.0`。
 
 ## 开始前
@@ -119,6 +119,20 @@ App 复用。
 30 天清理资格。
 
 ## 隐私安全地收集诊断和日志
+
+诊断中的 `runtime.status_freshness` 分别显示整体状态流和总控状态的年龄。房间状态持续
+更新不代表总控一定正常；总控超过“主机静默重连时间”后先发合并查询，经过命令确认超时
+与 10 秒中的较大宽限仍无有效回报，才断开重连。恢复查询不会根据缓存状态假装确认命令。
+
+`runtime.command_history` 最多保留最近 30 条控制记录，并与 `runtime.panels` 共享匿名
+面板标签。`queued`/`waiting` 表示尚在排队或等待；`confirmed` 表示已匹配主机状态；
+`unchanged` 表示与现有状态或待确认意图相同而未发送；`superseded` 表示被较新意图替换；
+`timeout`、`failed`、`blocked`、`disconnected` 分别表示最终确认超时、发送失败、规则阻止
+和会话结束。发送次数是尝试次数，不证明主机收到或执行。
+
+TCP 写入等待超过 8 秒会终止异常连接并重连；关闭清理超过 3 秒会强制终止传输。
+这些截止时间包含等待锁或任务清理，不会无限阻塞重载。诊断记录只保存在内存中，收集时
+请在重载或重启之前下载。
 
 1. 在“设置 -> 设备与服务 -> Linking The World Temp HA”下载诊断。
 2. 只收集复现问题前后的一小段 Home Assistant 日志，并同时提供连接阶段、失败类别和

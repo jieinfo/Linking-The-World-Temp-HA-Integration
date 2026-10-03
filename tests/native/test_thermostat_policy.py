@@ -156,6 +156,8 @@ class ThermostatPolicyTests(unittest.TestCase):
 
         async def exercise() -> None:
             instance = object.__new__(hub_module.LinkingTempHub)
+            instance.health = hub_module.HealthTracker()
+            instance.health.mark_stage(hub_module.ConnectionStage.READY)
             instance.allow_control = True
             instance.connected = True
             instance.protocol_verified = True

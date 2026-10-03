@@ -25,6 +25,8 @@ PARSER_RECOVERY_GRACE = 5.0
 CONNECT_TIMEOUT = 8
 HELLO_TIMEOUT = 8
 LOGIN_TIMEOUT = 8
+WRITE_TIMEOUT = 8
+CLOSE_TIMEOUT = 3
 TECH_SYSTEM_MAC = bytes.fromhex("ff00ffffffff00ff")
 
 CLIENT_PUBLIC_KEY = b"""-----BEGIN PUBLIC KEY-----
@@ -569,27 +571,38 @@ class AsyncMoorgenClient:
 
     async def close(self) -> None:
         self._ready = False
+        writer = self._writer
+        self._writer = None
+        self._reader = None
+        if writer is not None:
+            writer.close()
         task = self._reader_task
         self._reader_task = None
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        self._flush_pending_parser_warning("connection closed before recovery")
-        warning_task = self._parser_warning_task
-        self._cancel_parser_warning_task()
-        if warning_task is not None and warning_task is not asyncio.current_task():
-            await asyncio.gather(warning_task, return_exceptions=True)
-        if self._writer is not None:
-            self._writer.close()
-            try:
-                await self._writer.wait_closed()
-            except OSError:
-                pass
-        self._reader = None
-        self._writer = None
+        try:
+            async with asyncio.timeout(CLOSE_TIMEOUT):
+                if task is not None and task is not asyncio.current_task():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                self._flush_pending_parser_warning("connection closed before recovery")
+                warning_task = self._parser_warning_task
+                self._cancel_parser_warning_task()
+                if (
+                    warning_task is not None
+                    and warning_task is not asyncio.current_task()
+                ):
+                    await asyncio.gather(warning_task, return_exceptions=True)
+                if writer is not None:
+                    await writer.wait_closed()
+        except TimeoutError:
+            if writer is not None:
+                writer.transport.abort()
+            _LOGGER.debug("MC7021 socket close timed out; transport aborted")
+        except asyncio.CancelledError:
+            if writer is not None:
+                writer.transport.abort()
+            raise
+        except OSError:
+            pass
 
     async def send_command(
         self,
@@ -772,22 +785,31 @@ class AsyncMoorgenClient:
         *,
         before_write: Callable[[], None] | None = None,
     ) -> None:
-        if self._writer is None:
+        writer = self._writer
+        if writer is None:
             raise ConnectionError("MC7021 socket is not connected")
-        async with self._write_lock:
-            if before_write is not None:
-                before_write()
-            frame = YasHcpFrame(kind, opcode, self._sequence, body)
-            self._sequence = (self._sequence + 1) & 0xFFFF
-            self._writer.write(frame.encode())
-            await self._writer.drain()
-            _LOGGER.debug(
-                "Sent MC7021 kind=%02x opcode=%02x seq=%d body_length=%d",
-                kind,
-                opcode,
-                frame.sequence,
-                len(body),
-            )
+        try:
+            async with asyncio.timeout(WRITE_TIMEOUT):
+                async with self._write_lock:
+                    if self._writer is not writer:
+                        raise ConnectionError("MC7021 socket was closed before write")
+                    if before_write is not None:
+                        before_write()
+                    frame = YasHcpFrame(kind, opcode, self._sequence, body)
+                    self._sequence = (self._sequence + 1) & 0xFFFF
+                    writer.write(frame.encode())
+                    await writer.drain()
+                    _LOGGER.debug(
+                        "Sent MC7021 kind=%02x opcode=%02x seq=%d body_length=%d",
+                        kind,
+                        opcode,
+                        frame.sequence,
+                        len(body),
+                    )
+        except TimeoutError as error:
+            self._ready = False
+            writer.transport.abort()
+            raise ConnectionError("MC7021 socket write timed out") from error
 
     async def _wait_for(self, kind: int, opcode: int, timeout: float) -> YasHcpFrame:
         return await self._wait_for_opcodes(kind, {opcode}, timeout)

@@ -171,6 +171,10 @@ class LinkingTempHub:
         self._reauth_required = False
         self._reauth_watcher: asyncio.Task[None] | None = None
         self._last_valid_status_at: float | None = None
+        self._last_system_status_at: float | None = None
+        self._session_started_at: float | None = None
+        self._system_status_query_at: float | None = None
+        self._last_status_query_at: float | None = None
 
     async def async_start(self) -> None:
         """Restore known panels and start the supervised TCP session."""
@@ -529,7 +533,9 @@ class LinkingTempHub:
 
     def _matches_verified_system_state(self, expected: dict[str, str]) -> bool:
         """Return whether one total-control intent already matches verified state."""
-        return all(getattr(self.state, key, None) == value for key, value in expected.items())
+        return self._system_status_query_at is None and all(
+            getattr(self.state, key, None) == value for key, value in expected.items()
+        )
 
     async def _async_run(self) -> None:
         retry_delay = 5
@@ -564,6 +570,7 @@ class LinkingTempHub:
                 await self.repairs.async_set_protocol_incompatible(False)
                 self.last_connection_error = "none"
                 self._last_valid_status_at = time.monotonic()
+                self._session_started_at = self._last_valid_status_at
                 retry_delay = 5
                 self._notify()
                 await self._async_session_loop(client)
@@ -758,6 +765,7 @@ class LinkingTempHub:
                     f"{now - last_status_at:.0f} seconds"
                 )
             await self._async_poll_pending_status(now)
+            await self._async_check_system_freshness(client, now)
             await self._async_expire_pending(now)
             await self._async_dispatch_queued()
             if now >= heartbeat_at:
@@ -776,6 +784,46 @@ class LinkingTempHub:
             except asyncio.TimeoutError:
                 pass
 
+    async def _async_check_system_freshness(
+        self, client: AsyncMoorgenClient, now: float
+    ) -> None:
+        """Room reports cannot keep a silent total-system state healthy forever."""
+        last_total = self._last_system_status_at
+        anchor = last_total if last_total is not None else self._session_started_at
+        if anchor is None or now - anchor < self.controller_silence_timeout:
+            return
+        if self._system_status_query_at is None:
+            # A pending command's query in this same loop refreshes all devices.
+            self._system_status_query_at = now
+            if self._last_status_query_at != now:
+                self.health.increment("system_status_refresh_queries")
+                await client.request_status()
+                self._last_status_query_at = now
+            return
+        grace = max(10.0, self.command_confirmation_timeout)
+        if now - self._system_status_query_at >= grace:
+            raise ConnectionError(
+                "MC7021 total-system status has been silent for "
+                f"{now - anchor:.0f} seconds after a refresh query"
+            )
+
+    def status_freshness(self) -> dict[str, float | bool | None]:
+        """Export stream ages, independently of socket or room activity."""
+        now = time.monotonic()
+        return {
+            "any_status_age_seconds": (
+                round(max(0.0, now - self._last_valid_status_at), 3)
+                if self._last_valid_status_at is not None
+                else None
+            ),
+            "system_status_age_seconds": (
+                round(max(0.0, now - self._last_system_status_at), 3)
+                if self._last_system_status_at is not None
+                else None
+            ),
+            "system_refresh_pending": self._system_status_query_at is not None,
+        }
+
     async def _async_disconnect(self) -> None:
         client = self._client
         self._client = None
@@ -785,6 +833,10 @@ class LinkingTempHub:
         self.protocol_verified = False
         self.protocol_status = "disconnected"
         self._last_valid_status_at = None
+        self._last_system_status_at = None
+        self._session_started_at = None
+        self._system_status_query_at = None
+        self._last_status_query_at = None
         if was_authenticated:
             self.health.increment("disconnects")
         if panel_registry := getattr(self, "panel_registry", None):
@@ -792,6 +844,11 @@ class LinkingTempHub:
         for thermostat in self.thermostats.values():
             thermostat.available = False
         self.filtered.clear()
+        for pending in self._pending.values():
+            self.health.command_result(pending.trace_id, "disconnected")
+        for commands in self._queued.values():
+            for queued in commands:
+                self.health.command_result(queued.trace_id, "disconnected")
         self._pending.clear()
         self._queued.clear()
         self._record_command_queue_depth()
@@ -835,6 +892,7 @@ class LinkingTempHub:
         coalesce: bool = False,
         send_guard: Callable[[], str | None] | None = None,
         from_queue: bool = False,
+        trace_id: int | None = None,
     ) -> None:
         """Send or queue one command while the per-hub command lock is held."""
         if not self.allow_control:
@@ -849,12 +907,15 @@ class LinkingTempHub:
                 self._increment_health("commands_blocked")
                 raise HomeAssistantError(reason)
 
+        if trace_id is None:
+            trace_id = self.health.start_command(target, command_intent(expected))
         replacement = QueuedCommand(
-            label, target, expected, mac, command, value, send_guard
+            label, target, expected, mac, command, value, send_guard, trace_id
         )
         if target in self._pending:
             if not coalesce:
                 self.health.increment("commands_blocked")
+                self.health.command_result(trace_id, "blocked")
                 raise HomeAssistantError(
                     f"仍在等待主机确认: {self._pending[target].label}"
                 )
@@ -868,8 +929,10 @@ class LinkingTempHub:
                 queued = [
                     queued_command
                     for queued_command in queued
-                    if command_intent(queued_command.expected) != command_intent(expected)
+                    if command_intent(queued_command.expected)
+                    != command_intent(expected)
                 ]
+            self._record_coalesced_history(target, queued, replacement)
             if queued:
                 self._queued[target] = queued
                 self.last_command_status = f"queued:{label}"
@@ -881,15 +944,15 @@ class LinkingTempHub:
             self._notify()
             return
         if coalesce and not from_queue and self._queued.get(target):
-            queued = coalesce_queued(
-                None, self._queued[target], replacement
-            )
+            queued = coalesce_queued(None, self._queued[target], replacement)
             if target == "system" and self._matches_verified_system_state(expected):
                 queued = [
                     queued_command
                     for queued_command in queued
-                    if command_intent(queued_command.expected) != command_intent(expected)
+                    if command_intent(queued_command.expected)
+                    != command_intent(expected)
                 ]
+            self._record_coalesced_history(target, queued, replacement)
             if not queued:
                 self._queued.pop(target, None)
                 self.last_command_status = f"confirmed:{label}"
@@ -903,6 +966,7 @@ class LinkingTempHub:
             self._notify()
             return
         if target == "system" and self._matches_verified_system_state(expected):
+            self.health.command_result(trace_id, "unchanged")
             self.last_command_status = f"confirmed:{label}"
             self._record_command_queue_depth()
             self._notify()
@@ -912,7 +976,11 @@ class LinkingTempHub:
             remaining = self.command_min_interval - (now - self._last_command_at)
             if remaining > 0:
                 await asyncio.sleep(remaining)
-        validate_send_guard()
+        try:
+            validate_send_guard()
+        except HomeAssistantError:
+            self.health.command_result(trace_id, "blocked")
+            raise
         now = time.monotonic()
         pending = PendingCommand(
             label,
@@ -924,12 +992,14 @@ class LinkingTempHub:
             mac,
             command,
             value,
+            trace_id=trace_id,
         )
         self._pending[target] = pending
         self._record_command_queue_depth()
         self.last_command_status = f"waiting:{label}"
         self._notify()
         try:
+            self.health.command_sent(trace_id)
             if send_guard is None:
                 await self._client.send_command(mac, command, value)
             else:
@@ -942,6 +1012,7 @@ class LinkingTempHub:
             self.health.increment("commands_sent")
             self._last_command_at = time.monotonic()
         except Exception:
+            self.health.command_result(trace_id, "failed")
             self._pending.pop(target, None)
             self._record_command_queue_depth()
             self.last_command_status = f"failed:{label}"
@@ -952,6 +1023,17 @@ class LinkingTempHub:
             )
             self._notify()
             raise
+
+    def _record_coalesced_history(
+        self, target: str, retained: list[QueuedCommand], replacement: QueuedCommand
+    ) -> None:
+        """Finish every discarded queued intent, without recording a fake send."""
+        retained_ids = {command.trace_id for command in retained}
+        for old in self._queued.get(target, ()):
+            if old.trace_id not in retained_ids:
+                self.health.command_result(old.trace_id, "superseded")
+        if replacement.trace_id not in retained_ids:
+            self.health.command_result(replacement.trace_id, "unchanged")
 
     async def _async_dispatch_queued(self) -> None:
         async with self._command_lock:
@@ -974,8 +1056,10 @@ class LinkingTempHub:
                     coalesce=True,
                     send_guard=queued.send_guard,
                     from_queue=True,
+                    trace_id=queued.trace_id,
                 )
             except HomeAssistantError:
+                self.health.command_result(queued.trace_id, "blocked")
                 self.last_command_status = f"failed:{queued.label}"
                 _LOGGER.warning(
                     "Queued command was not sent: target_type=%s command_code=%d",
@@ -996,7 +1080,9 @@ class LinkingTempHub:
         self.health.increment("status_fallback_queries")
         for pending in due:
             pending.status_queries += 1
+            self.health.command_queried(pending.trace_id)
         await self._client.request_status()
+        self._last_status_query_at = now
         for pending in due:
             pending.next_status_poll_at = now + STATUS_POLL_INTERVAL
         _LOGGER.debug(
@@ -1019,6 +1105,7 @@ class LinkingTempHub:
         ):
             return
         self._pending.pop(target, None)
+        self.health.command_result(pending.trace_id, "confirmed")
         self._record_command_queue_depth()
         self.last_command_status = f"confirmed:{pending.label}"
         self.health.increment("commands_confirmed")
@@ -1049,6 +1136,7 @@ class LinkingTempHub:
                     for command in self._queued.get(target, ())
                 )
                 if has_newer_same_intent:
+                    self.health.command_result(pending.trace_id, "superseded")
                     self._pending.pop(target, None)
                     self.health.increment("commands_timed_out")
                     self.last_command_status = f"timeout_continuing:{pending.label}"
@@ -1066,6 +1154,7 @@ class LinkingTempHub:
                     self.health.increment("commands_timed_out")
                     await self._async_retry_temperature_command(pending)
                 else:
+                    self.health.command_result(pending.trace_id, "timeout")
                     self._pending.pop(target, None)
                     self.health.increment("commands_timed_out")
                     self.last_command_status = f"timeout:{pending.label}"
@@ -1117,10 +1206,12 @@ class LinkingTempHub:
             self.command_confirmation_timeout,
         )
         try:
+            self.health.command_sent(pending.trace_id)
             await client.send_command(pending.mac, pending.command, pending.value)
             self.health.increment("commands_sent")
             self._last_command_at = time.monotonic()
         except Exception:
+            self.health.command_result(pending.trace_id, "failed")
             if self._pending.get(pending.target) is pending:
                 self._pending.pop(pending.target, None)
                 self.last_command_status = f"failed:{pending.label}"
@@ -1162,6 +1253,8 @@ class LinkingTempHub:
             return
         total = decode_tech_system_status(body, self.tech_system_mac)
         if total:
+            self._last_system_status_at = now_monotonic
+            self._system_status_query_at = None
             self.protocol_verified = True
             self.protocol_status = "verified"
             for name, value in total.items():

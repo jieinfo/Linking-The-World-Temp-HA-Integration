@@ -103,6 +103,7 @@ async def async_get_config_entry_diagnostics(
             "protocol_status": _protocol_status(hub.protocol_status),
             "last_command_state": _command_state(hub.last_command_status),
             "control_permission": hub.control_permission,
+            "status_freshness": hub.status_freshness(),
             "system_state": {
                 "power": hub.state.power,
                 "mode": hub.state.mode,
@@ -120,6 +121,9 @@ async def async_get_config_entry_diagnostics(
                 "pending": len(hub._pending),
                 "queued": sum(len(commands) for commands in hub._queued.values()),
             },
+            "command_history": runtime.health.command_history(
+                build_anonymous_panel_map(hub.panel_registry.records)
+            ),
             "parser_anomalies": [dict(anomaly) for anomaly in hub.parser_anomalies],
             "thermostat_count": len(hub.thermostats),
             "panels": _anonymous_thermostats(hub),
