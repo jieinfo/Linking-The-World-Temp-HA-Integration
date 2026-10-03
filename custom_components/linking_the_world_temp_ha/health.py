@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+import time
 from collections import Counter, deque
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from statistics import fmean
 from typing import Any
@@ -31,6 +33,7 @@ _COUNTER_NAMES = (
     "commands_confirmed_by_push",
     "commands_confirmed_after_query",
     "status_fallback_queries",
+    "system_status_refresh_queries",
     "commands_retried",
     "commands_coalesced",
     "commands_blocked",
@@ -53,6 +56,22 @@ _DNS_ENDPOINT = re.compile(
 _AT_HOST_PORT = re.compile(
     r"(?i)\bat\s+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?::\d{1,5})\b"
 )
+
+
+@dataclass
+class _CommandTrace:
+    """An in-memory reference; household targets are redacted at export."""
+
+    id: int
+    target: str
+    intent: str
+    timestamp: str
+    submitted_at: float
+    sent_at: float | None = None
+    finished_at: float | None = None
+    attempts: int = 0
+    status_queries: int = 0
+    result: str = "queued"
 
 
 def _sanitize_message(
@@ -91,6 +110,78 @@ class HealthTracker:
         self._peak_command_queue_depth = 0
         self._consecutive_command_timeouts = 0
         self._command_timeout_recoveries = 0
+        self._command_history: deque[_CommandTrace] = deque(maxlen=30)
+        self._next_command_id = 1
+
+    def start_command(self, target: str, intent: str) -> int:
+        """Assign one bounded trace to a submitted command, including queue time."""
+        trace = _CommandTrace(
+            self._next_command_id,
+            target,
+            intent,
+            datetime.now(UTC).isoformat(),
+            time.monotonic(),
+        )
+        self._next_command_id += 1
+        self._command_history.append(trace)
+        return trace.id
+
+    def _command_trace(self, trace_id: int | None) -> _CommandTrace | None:
+        return next(
+            (item for item in self._command_history if item.id == trace_id), None
+        )
+
+    def command_sent(self, trace_id: int | None) -> None:
+        """Mark a write attempt before a matching push can race its drain."""
+        if (trace := self._command_trace(trace_id)) is not None:
+            if trace.sent_at is None:
+                trace.sent_at = time.monotonic()
+            trace.attempts += 1
+            trace.result = "waiting"
+
+    def command_queried(self, trace_id: int | None) -> None:
+        """Count fallback queries for this command, not unrelated room reports."""
+        if (trace := self._command_trace(trace_id)) is not None:
+            trace.status_queries += 1
+
+    def command_result(self, trace_id: int | None, result: str) -> None:
+        """Complete a retained trace; evicted traces need no further bookkeeping."""
+        if (trace := self._command_trace(trace_id)) is not None:
+            trace.result = result
+            trace.finished_at = time.monotonic()
+
+    def command_history(self, panel_labels: Mapping[str, str]) -> list[dict[str, Any]]:
+        """Return fresh dictionaries with the same anonymous labels as panels."""
+        return [
+            {
+                "id": trace.id,
+                "timestamp": trace.timestamp,
+                "target": (
+                    "system"
+                    if trace.target == "system"
+                    else panel_labels.get(
+                        trace.target.removeprefix("thermostat_"), "panel_unknown"
+                    )
+                ),
+                "intent": trace.intent,
+                "result": trace.result,
+                "attempts": trace.attempts,
+                "status_queries": trace.status_queries,
+                "queue_delay_seconds": (
+                    round(max(0.0, trace.sent_at - trace.submitted_at), 3)
+                    if trace.sent_at is not None
+                    else None
+                ),
+                "confirmation_seconds": (
+                    round(max(0.0, trace.finished_at - trace.sent_at), 3)
+                    if trace.result == "confirmed"
+                    and trace.sent_at is not None
+                    and trace.finished_at is not None
+                    else None
+                ),
+            }
+            for trace in self._command_history
+        ]
 
     def increment(self, name: str, value: int = 1) -> None:
         """Increment one named counter without retaining event payloads."""

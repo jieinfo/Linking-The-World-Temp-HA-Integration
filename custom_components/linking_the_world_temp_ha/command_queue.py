@@ -25,6 +25,7 @@ class PendingCommand:
     value: int | None
     attempts: int = 1
     status_queries: int = 0
+    trace_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class QueuedCommand:
     command: int
     value: int | None
     send_guard: Callable[[], str | None] | None = None
+    trace_id: int | None = None
 
 
 def command_intent(expected: dict[str, str]) -> str:
