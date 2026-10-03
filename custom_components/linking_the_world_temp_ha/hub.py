@@ -570,8 +570,7 @@ class LinkingTempHub:
                 await self.repairs.async_set_login_timeout(False)
                 await self.repairs.async_set_protocol_incompatible(False)
                 self.last_connection_error = "none"
-                self._last_valid_status_at = time.monotonic()
-                self._session_started_at = self._last_valid_status_at
+                self._session_started_at = time.monotonic()
                 retry_delay = 5
                 self._notify()
                 await self._async_session_loop(client)

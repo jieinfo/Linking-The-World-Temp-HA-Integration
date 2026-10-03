@@ -255,3 +255,10 @@ async def test_session_loop_gives_whole_stream_silence_a_query_and_grace(
     await hub._async_disconnect()
     assert not hub.available
     assert hub.status_freshness()["system_status_age_seconds"] is None
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_connected_without_reports_has_no_fabricated_status_age(setup_integration):
+    freshness = setup_integration.hub.status_freshness()
+    assert freshness["any_status_age_seconds"] is None
+    assert freshness["system_status_age_seconds"] is None
