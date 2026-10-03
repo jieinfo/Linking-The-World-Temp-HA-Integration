@@ -141,6 +141,10 @@ class DiagnosticSensor(LinkingTempEntity, SensorEntity):
         return self.description.value_fn(self.hub)
 
     @property
+    def update_scopes(self) -> frozenset[str]:
+        return frozenset({"diagnostics", "discovery"})
+
+    @property
     def available(self) -> bool:
         return True
 
@@ -226,4 +230,6 @@ async def async_setup_entry(
         async_add_entities(entities)
 
     add_new_entities()
-    entry.async_on_unload(hub.async_add_listener(add_new_entities))
+    entry.async_on_unload(
+        hub.async_add_listener(add_new_entities, scopes={"discovery"})
+    )

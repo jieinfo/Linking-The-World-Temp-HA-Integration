@@ -24,6 +24,11 @@ class SystemModeSelect(LinkingTempEntity, SelectEntity):
         return list(MODE_BY_LABEL)
 
     @property
+    def update_scopes(self) -> frozenset[str]:
+        # The operation hint also depends on pending commands and the mode lock.
+        return super().update_scopes | {"diagnostics"}
+
+    @property
     def current_option(self) -> str | None:
         mode = self.hub.state.mode
         return MODE_LABELS.get(mode) if mode is not None else None

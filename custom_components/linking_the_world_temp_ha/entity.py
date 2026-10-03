@@ -26,6 +26,10 @@ class LinkingTempEntity(Entity):
         return self.hub.available
 
     @property
+    def update_scopes(self) -> frozenset[str]:
+        return frozenset({"system"})
+
+    @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(
             identifiers={(DOMAIN, self.hub.entry.entry_id)},
@@ -35,7 +39,11 @@ class LinkingTempEntity(Entity):
         )
 
     async def async_added_to_hass(self) -> None:
-        self.async_on_remove(self.hub.async_add_listener(self.async_write_ha_state))
+        self.async_on_remove(
+            self.hub.async_add_listener(
+                self.async_write_ha_state, scopes=self.update_scopes
+            )
+        )
 
 
 class LinkingThermostatEntity(LinkingTempEntity):
@@ -49,6 +57,10 @@ class LinkingThermostatEntity(LinkingTempEntity):
     def available(self) -> bool:
         thermostat = self.hub.thermostats.get(self.mac_hex)
         return bool(self.hub.available and thermostat and thermostat.available)
+
+    @property
+    def update_scopes(self) -> frozenset[str]:
+        return frozenset({f"thermostat_{self.mac_hex}"})
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -65,7 +77,11 @@ class LinkingThermostatEntity(LinkingTempEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        self.async_on_remove(self.hub.async_add_listener(self._update_device_name))
+        self.async_on_remove(
+            self.hub.async_add_listener(
+                self._update_device_name, scopes={f"thermostat_{self.mac_hex}"}
+            )
+        )
         self._update_device_name()
 
     @callback
