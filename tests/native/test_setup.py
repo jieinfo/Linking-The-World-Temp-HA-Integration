@@ -122,6 +122,9 @@ async def test_setup_registers_controller_device_before_forwarding_platforms(
         async def async_stop(self) -> None:
             return None
 
+        def async_refresh_room_controls(self) -> None:
+            return None
+
     async def verify_parent_exists(*_args) -> None:
         nonlocal forwarded
         forwarded = True

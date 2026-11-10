@@ -1,5 +1,13 @@
 # Linking The World Temp HA changelog
 
+## 1.4.4 - HomeKit climate state reannounce
+
+- 在原生平台完成注册后，仅重发一次房间 Climate 的能力和运行模式状态，避免 HomeKit 在
+  集成重载或升级后保留旧目标模式，却只看到 `off` 可用模式。
+- 不恢复全量实体刷新：温度、湿度、滤波传感器、总控诊断和故障实体不参与这次重发；
+  房间发现、连接恢复、模式切换和控制确认逻辑保持不变。
+- 增加房间 Climate 定向重发回归测试，确认 HomeKit 对齐修复不会扩大刷新范围。
+
 ## 1.4.3 - HomeKit half-degree compatibility
 
 - 保持 HA 温控实体的 `16～28°C` 范围和 `1°C` 步进不变，仅兼容 HomeKit 在该范围内发送的

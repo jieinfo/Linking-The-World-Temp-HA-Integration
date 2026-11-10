@@ -142,6 +142,21 @@ async def test_pending_system_power_updates_mode_hint_before_confirmation(
     assert hass.states.get(entity_id).attributes["can_change_mode"]
 
 
+async def test_room_control_reannounce_refreshes_only_climates(
+    hass, refresh_capture
+):
+    """A post-setup reannounce gives HomeKit fresh climate capabilities only."""
+    hub, writes = refresh_capture
+    writes.clear()
+    hub.async_refresh_room_controls()
+    await hass.async_block_till_done()
+
+    assert f"thermostat_{PANEL_ONE}_climate" in writes
+    assert f"thermostat_{PANEL_TWO}_climate" in writes
+    assert not any("automation_" in key for key in writes)
+    assert "system_temperature" not in writes
+
+
 async def test_completed_mode_transition_restores_hint_without_another_report(
     hass, refresh_capture, fake_controller
 ):
