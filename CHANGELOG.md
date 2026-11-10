@@ -1,5 +1,16 @@
 # Linking The World Temp HA changelog
 
+## 1.4.5 - Native climate temperature API
+
+- 房间温控器迁移到 HA 2026.11 的 `native_current_temperature`、`native_target_temperature`
+  和 `_attr_native_temperature_unit` 接口，消除旧温度属性将在 HA 2027.11 停用的三条警告。
+- 仅在 HA 2026.9/2026.10 启用旧接口适配，最低支持版本仍为 `2026.9.0`；新版 HA 不再定义
+  弃用属性，不屏蔽或降低警告日志级别。
+- 保留主机摄氏度数据、HA 单位转换、`16～28°C` 范围、`1°C` 步进、HomeKit 半度兼容、
+  实体标识和控制确认流程；增加原生温度属性、单位转换和新版 HA 类注册无弃用警告测试。
+- CI 增加独立的 HA Core 2026.11.1 原生温度接口校验，不受测试辅助包固定旧 HA 版本的
+  限制，直接验证类注册无弃用告警及摄氏度/华氏度显示转换。
+
 ## 1.4.4 - HomeKit climate state reannounce
 
 - 在原生平台完成注册后，仅重发一次房间 Climate 的能力和运行模式状态，避免 HomeKit 在

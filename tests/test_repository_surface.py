@@ -58,6 +58,13 @@ class RepositorySurfaceTests(unittest.TestCase):
         self.assertIn("name: latest", workflow)
         self.assertIn("pytest-homeassistant-custom-component==0.13.363", workflow)
 
+    def test_ci_checks_real_native_climate_api_without_pytest_fixture_pin(self) -> None:
+        """A lagging pytest helper must not skip the new native API regression."""
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn("homeassistant==2026.11.1", workflow)
+        self.assertIn("python -m unittest -v tests.test_climate_native_api", workflow)
+
     def test_public_repository_urls_use_integration_name(self) -> None:
         """Every maintained public link must use the renamed repository."""
         text_suffixes = {".json", ".md", ".py", ".yaml", ".yml"}
