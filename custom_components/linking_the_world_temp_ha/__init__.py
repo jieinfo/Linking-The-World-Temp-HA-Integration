@@ -67,6 +67,7 @@ async def async_setup_entry(
         runtime_assigned = True
         hub.controller_device_id = _register_controller_device(hass, entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        hub.async_refresh_room_controls()
         entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
         return True
     except BaseException:

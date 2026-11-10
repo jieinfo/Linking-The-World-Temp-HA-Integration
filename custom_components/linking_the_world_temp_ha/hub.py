@@ -228,6 +228,17 @@ class LinkingTempHub:
             if not scopes or subscribed is None or not subscribed.isdisjoint(scopes):
                 listener()
 
+    @callback
+    def async_refresh_room_controls(self) -> None:
+        """Reannounce room Climate capabilities after platform setup.
+
+        HomeKit can restore a cached target mode while the native platforms are
+        still being registered. A room-only reannounce aligns that cache with
+        the current dynamic HVAC mode list without refreshing measurements or
+        diagnostics.
+        """
+        self._notify("room_controls")
+
     @property
     def available(self) -> bool:
         stage = getattr(getattr(self, "health", None), "stage", None)
