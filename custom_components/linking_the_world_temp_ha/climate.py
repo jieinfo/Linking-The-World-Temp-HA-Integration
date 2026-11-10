@@ -25,7 +25,7 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
 
     _attr_translation_key = "room_thermostat"
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_min_temp = THERMOSTAT_MIN_TEMPERATURE
     _attr_max_temp = THERMOSTAT_MAX_TEMPERATURE
     _attr_target_temperature_step = 1
@@ -43,12 +43,32 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
         return super().update_scopes | {"room_controls"}
 
     @property
-    def current_temperature(self) -> float | None:
+    def native_current_temperature(self) -> float | None:
         return self.hub.thermostats[self.mac_hex].current_temperature
 
     @property
-    def target_temperature(self) -> float | None:
+    def native_target_temperature(self) -> float | None:
         return self.hub.thermostats[self.mac_hex].target_temperature
+
+    # HA 2026.9/2026.10 still read the old API. Do not define these aliases on
+    # newer HA, whose class-registration hook flags them as deprecated.
+    if not hasattr(ClimateEntity, "native_temperature_unit"):
+
+        @property
+        def native_temperature_unit(self) -> str:
+            return self._attr_native_temperature_unit
+
+        @property
+        def temperature_unit(self) -> str:
+            return self.native_temperature_unit
+
+        @property
+        def current_temperature(self) -> float | None:
+            return self.native_current_temperature
+
+        @property
+        def target_temperature(self) -> float | None:
+            return self.native_target_temperature
 
     @property
     def current_humidity(self) -> int | None:
