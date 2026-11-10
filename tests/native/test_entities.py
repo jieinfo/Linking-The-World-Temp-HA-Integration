@@ -361,6 +361,50 @@ async def test_queued_panel_enable_rechecks_the_operating_mode_before_send(
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
+async def test_homekit_half_degree_setpoint_is_normalized_to_integer_controller_value(
+    hass, setup_integration, fake_controller
+):
+    """A HomeKit half-degree request is accepted without changing HA controls."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, target=26)
+    )
+    await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
+    climate_entity = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
+    )
+    sent_values: list[int] = []
+
+    async def acknowledge_temperature(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        if fields.get(0x0004) != bytes.fromhex(mac_hex):
+            return
+        value = fields.get(0x000A)
+        if fields.get(0x0009) == b"\x03" and value is not None:
+            sent_values.append(value[0])
+            await fake_controller.async_send_status(
+                _thermostat_status(hub, mac_hex, target=value[0] // 2)
+            )
+
+    fake_controller.on_command = acknowledge_temperature
+    await hass.services.async_call(
+        climate.DOMAIN,
+        climate.SERVICE_SET_TEMPERATURE,
+        {"entity_id": climate_entity, ATTR_TEMPERATURE: 23.5},
+        blocking=True,
+    )
+    await _wait_for(lambda: sent_values == [46])
+    await _wait_for(lambda: hub.thermostats[mac_hex].target_temperature == 23)
+
+    state = hass.states.get(climate_entity)
+    assert state.attributes["min_temp"] == 16
+    assert state.attributes["max_temp"] == 28
+    assert state.attributes["target_temp_step"] == 1
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_matching_power_request_cancels_a_stale_opposite_queue(
     hass, setup_integration, fake_controller
 ):
@@ -1336,8 +1380,10 @@ async def test_control_guards_reject_invalid_or_unsafe_operations(
         await hub.async_set_scene("party")
     with pytest.raises(HomeAssistantError, match="冬季加湿"):
         await hub.async_set_winter_humidifier(True)
-    with pytest.raises(HomeAssistantError, match="整数"):
-        await hub.async_set_thermostat_temperature(mac_hex, 22.5)
+    with pytest.raises(HomeAssistantError, match="整数或半度"):
+        await hub.async_set_thermostat_temperature(mac_hex, 22.25)
+    with pytest.raises(HomeAssistantError, match="整数或半度"):
+        await hub.async_set_thermostat_temperature(mac_hex, 28.5)
     with pytest.raises(HomeAssistantError, match="整数"):
         await hub.async_set_thermostat_temperature(mac_hex, 29)
     with pytest.raises(HomeAssistantError, match="尚未被主机发现"):

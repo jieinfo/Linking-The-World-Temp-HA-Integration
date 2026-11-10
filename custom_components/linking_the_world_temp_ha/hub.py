@@ -509,19 +509,23 @@ class LinkingTempHub:
     ) -> None:
         thermostat = self._require_thermostat(mac_hex)
         temperature = float(temperature)
-        if not temperature.is_integer() or not (
+        # HomeKit may send half-degree setpoints even though the controller
+        # accepts whole degrees. Keep the HA entity at a 1°C step and normalize
+        # only a valid in-range .5 input at the protocol boundary.
+        if not (temperature * 2).is_integer() or not (
             THERMOSTAT_MIN_TEMPERATURE <= temperature <= THERMOSTAT_MAX_TEMPERATURE
         ):
             raise HomeAssistantError(
-                f"温度必须是 {THERMOSTAT_MIN_TEMPERATURE} 至 {THERMOSTAT_MAX_TEMPERATURE}°C 的整数"
+                f"温度必须是 {THERMOSTAT_MIN_TEMPERATURE} 至 {THERMOSTAT_MAX_TEMPERATURE}°C 的整数或半度"
             )
+        normalized_temperature = int(temperature)
         await self._async_send_tracked(
             f"thermostat_{mac_hex}",
             f"{self.thermostat_name(thermostat)} 设定温度",
-            {"target_temperature": f"{int(temperature)}"},
+            {"target_temperature": f"{normalized_temperature}"},
             thermostat.mac,
             COMMAND_MODE,
-            int(temperature) * 2,
+            normalized_temperature * 2,
             coalesce=True,
         )
 
