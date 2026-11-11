@@ -23,7 +23,7 @@
 - A room panel is off in a valid temperature mode: Climate reports `off`, and turning it on sends only panel power.
 - The system is in ventilation or dehumidification: Climate reports `off`, and an enable request is rejected.
 - HA/HomeKit sends a stale direct `cool` or `heat` request: it is rejected without changing the system mode.
-- The controller has not reported a usable system state: Climate remains `off` and cannot be enabled.
+- The controller has not reported a usable system state: HA marks Climate unavailable, its internal mode remains `off`, and it cannot be enabled.
 
 ### Task 1: Pin the delegated-mode contract with tests
 
@@ -35,10 +35,10 @@
 - Consumes the existing `RoomThermostat` and `SystemModeSelect` entities.
 - Produces regression tests for stable mode exposure, live state mapping, and command rejection.
 
-- [ ] **Step 1: Add/update failing tests** for `hvac_modes == ["off", "heat_cool"]`, live `hvac_mode`, power-only enable/disable, and rejection of direct `cool`/`heat`/unsupported mode requests.
-- [ ] **Step 2: Run the focused tests** and confirm they fail because production code still exposes `cool` and `heat`.
-- [ ] **Step 3: Update expected mode assertions** in existing room thermostat tests while preserving all command and state assertions.
-- [ ] **Step 4: Run the focused tests** and confirm the intended failures remain limited to the production mode contract.
+- [x] **Step 1: Add/update failing tests** for `hvac_modes == ["off", "heat_cool"]`, live `hvac_mode`, power-only enable/disable, and rejection of direct `cool`/`heat`/unsupported mode requests.
+- [x] **Step 2: Run the focused tests** and confirm they fail because production code still exposes `cool` and `heat`.
+- [x] **Step 3: Update expected mode assertions** in existing room thermostat tests while preserving all command and state assertions.
+- [x] **Step 4: Run the focused tests** and confirm the intended failures remain limited to the production mode contract.
 
 ### Task 2: Implement stable room Climate mode semantics
 
@@ -49,10 +49,10 @@
 - Consumes `can_operate_room_thermostat(system_power, system_mode)`.
 - Keeps `RoomThermostat.async_set_temperature` and the existing hub power commands unchanged.
 
-- [ ] **Step 1: Change `hvac_modes`** to return `[HVACMode.OFF, HVACMode.HEAT_COOL]` for every room and every controller mode.
-- [ ] **Step 2: Map `hvac_mode`** to `HEAT_COOL` only when the room panel is on and the system policy permits operation; otherwise return `OFF`.
-- [ ] **Step 3: Make `async_set_hvac_mode`** accept only `OFF` and `HEAT_COOL`; reject all other direct mode requests and preserve the existing policy error for enabling outside cooling/heating.
-- [ ] **Step 4: Run focused tests** and confirm all delegated-mode tests pass.
+- [x] **Step 1: Change `hvac_modes`** to return `[HVACMode.OFF, HVACMode.HEAT_COOL]` for every room and every controller mode.
+- [x] **Step 2: Map `hvac_mode`** to `HEAT_COOL` only when the room panel is on and the system policy permits operation; otherwise return `OFF`.
+- [x] **Step 3: Make `async_set_hvac_mode`** accept only `OFF` and `HEAT_COOL`; reject all other direct mode requests and preserve the existing policy error for enabling outside cooling/heating.
+- [x] **Step 4: Run focused tests** and confirm all delegated-mode tests pass.
 
 ### Task 3: Verify the integration and documentation surface
 
@@ -64,7 +64,7 @@
 - Uses the final Climate state semantics from Task 2.
 - Produces no new entity IDs or configuration fields.
 
-- [ ] **Step 1: Update user-facing documentation** only where it currently promises room Climate mode selection; describe the system mode select as the mode control.
-- [ ] **Step 2: Run the complete native test suite, lint, mypy, and metadata checks.**
-- [ ] **Step 3: Inspect the diff and verify no second Climate entity, entity-ID churn, or unrelated behavior change was introduced.
-- [ ] **Step 4: Commit the implementation** with a focused conventional commit.
+- [x] **Step 1: Update user-facing documentation** only where it currently promises room Climate mode selection; describe the system mode select as the mode control.
+- [x] **Step 2: Run the complete native test suite, lint, mypy, and metadata checks.**
+- [x] **Step 3: Inspect the diff and verify no second Climate entity, entity-ID churn, or unrelated behavior change was introduced.
+- [x] **Step 4: Commit the implementation** with a focused conventional commit.

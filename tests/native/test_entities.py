@@ -254,9 +254,13 @@ async def test_room_panel_can_turn_on_while_system_power_remains_off(
     assert state.state == "heat_cool"
 
 
+@pytest.mark.parametrize(
+    "unsupported_mode",
+    [HVACMode.COOL, HVACMode.HEAT, HVACMode.FAN_ONLY, HVACMode.DRY],
+)
 @pytest.mark.usefixtures("enable_custom_integrations")
 async def test_room_climate_delegates_cooling_and_heating_to_system_mode(
-    hass, setup_integration, fake_controller
+    hass, setup_integration, fake_controller, unsupported_mode
 ):
     """Room Climate exposes power only and never changes the system mode."""
     hub = setup_integration.hub
@@ -279,9 +283,38 @@ async def test_room_climate_delegates_cooling_and_heating_to_system_mode(
     room_entity = RoomThermostat(hub, mac_hex)
     received_before = len(fake_controller.received_frames)
     with pytest.raises(HomeAssistantError, match="由科技系统总控选择"):
-        await room_entity.async_set_hvac_mode(HVACMode.COOL)
+        await room_entity.async_set_hvac_mode(unsupported_mode)
     assert len(fake_controller.received_frames) == received_before
     assert hub.state.mode == "cool"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_room_climate_stays_off_until_system_state_is_verified(
+    hass, setup_integration, fake_controller
+):
+    """An unverified controller cannot enable a room panel."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=False)
+    )
+    await _wait_for(lambda: mac_hex in hub.thermostats)
+    await hass.async_block_till_done()
+
+    climate_entity = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
+    )
+    state = hass.states.get(climate_entity)
+    assert state is not None
+    assert state.state == "unavailable"
+    assert state.attributes["hvac_modes"] == ["off", "heat_cool"]
+
+    room_entity = RoomThermostat(hub, mac_hex)
+    assert room_entity.hvac_mode == HVACMode.OFF
+    received_before = len(fake_controller.received_frames)
+    with pytest.raises(HomeAssistantError, match="只能跟随当前科技系统模式"):
+        await room_entity.async_set_hvac_mode(HVACMode.HEAT_COOL)
+    assert len(fake_controller.received_frames) == received_before
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")

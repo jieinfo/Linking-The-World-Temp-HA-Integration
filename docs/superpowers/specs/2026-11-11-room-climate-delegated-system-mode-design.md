@@ -32,6 +32,9 @@ where cooling, heating, ventilation, and dehumidification are changed.
 - `heat_cool` means the room panel is on and the current system mode allows
   room operation. It means “on; the system mode selector decides whether the
   controller is cooling or heating”, not an independent room mode.
+- Before the controller has reported a usable state, Home Assistant marks the
+  entity unavailable; the entity's internal HVAC mode remains `off` and it
+  cannot be enabled.
 - Setting `off` sends the existing room-panel power-off command.
 - Setting `heat_cool` sends the existing room-panel power-on command only when
   the current system mode is cooling or heating; otherwise the operation is
