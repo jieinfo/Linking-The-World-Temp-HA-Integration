@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from homeassistant.components import climate, select, switch
 from homeassistant.const import ATTR_TEMPERATURE
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
@@ -235,7 +235,7 @@ async def test_room_panel_can_turn_on_while_system_power_remains_off(
     )
     state = hass.states.get(climate_entity)
     assert state is not None
-    assert state.attributes["hvac_modes"] == ["off", "cool"]
+    assert state.attributes["hvac_modes"] == ["off", "cool", "heat"]
 
     await hass.services.async_call(
         climate.DOMAIN,
@@ -1181,17 +1181,17 @@ async def test_dynamic_climate_and_filtered_sensors_follow_app_pushes(
     await hass.async_block_till_done()
     state = hass.states.get(climate_entity)
     assert state.state == "off"
-    assert state.attributes["hvac_modes"] == ["off"]
+    assert state.attributes["hvac_modes"] == ["off", "cool", "heat"]
 
     await fake_controller.async_send_status(_system_status(hub, power=True, mode=4))
     await _wait_for(lambda: hub.state.mode == "dehumidify")
     await hass.async_block_till_done()
     state = hass.states.get(climate_entity)
     assert state.state == "off"
-    assert state.attributes["hvac_modes"] == ["off"]
+    assert state.attributes["hvac_modes"] == ["off", "cool", "heat"]
 
     received_before = len(fake_controller.received_frames)
-    with pytest.raises(ServiceValidationError, match="HVAC mode heat is not valid"):
+    with pytest.raises(HomeAssistantError, match="只能跟随当前科技系统模式"):
         await hass.services.async_call(
             climate.DOMAIN,
             climate.SERVICE_SET_HVAC_MODE,

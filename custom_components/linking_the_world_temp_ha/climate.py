@@ -7,6 +7,7 @@ from homeassistant.components.climate.const import ClimateEntityFeature, HVACMod
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import THERMOSTAT_MAX_TEMPERATURE, THERMOSTAT_MIN_TEMPERATURE
@@ -76,13 +77,8 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
 
     @property
     def hvac_modes(self) -> list[HVACMode]:
-        if not can_operate_room_thermostat(
-            self.hub.state.power, self.hub.state.mode
-        ):
-            return [HVACMode.OFF]
-        mode = self.hub.state.mode
-        active_mode = MODE_TO_HVAC.get(mode) if mode is not None else None
-        return [HVACMode.OFF] + ([active_mode] if active_mode is not None else [])
+        """Expose a stable capability set so HomeKit keeps one mode map."""
+        return [HVACMode.OFF, HVACMode.COOL, HVACMode.HEAT]
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -95,9 +91,19 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
         return MODE_TO_HVAC[mode] if mode is not None else HVACMode.OFF
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        await self.hub.async_set_thermostat_power(
-            self.mac_hex, hvac_mode != HVACMode.OFF
-        )
+        if hvac_mode == HVACMode.OFF:
+            await self.hub.async_set_thermostat_power(self.mac_hex, False)
+            return
+        mode = self.hub.state.mode
+        active_mode = MODE_TO_HVAC.get(mode) if mode is not None else None
+        if (
+            active_mode != hvac_mode
+            or not can_operate_room_thermostat(
+                self.hub.state.power, self.hub.state.mode
+            )
+        ):
+            raise HomeAssistantError("房间温控面板只能跟随当前科技系统模式")
+        await self.hub.async_set_thermostat_power(self.mac_hex, True)
 
     async def async_set_temperature(self, **kwargs) -> None:
         if (temperature := kwargs.get(ATTR_TEMPERATURE)) is None:
