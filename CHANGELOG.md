@@ -1,5 +1,14 @@
 # Linking The World Temp HA changelog
 
+## 1.4.6 - Stable HomeKit room modes
+
+- 房间 Climate 始终公开 `关闭`、`制冷`和`制热`三种稳定能力，避免 HomeKit 在启动/重连时
+  先看到只有 `关闭` 的动态列表并永久缓存错误的模式映射。
+- 房间当前状态仍由主机和科技系统总控决定：制冷/制热时显示对应状态，通风/除湿或面板
+  关闭时显示关闭；选择与当前总控模式不一致的房间模式会被明确拒绝，不发送错误命令。
+- 保留房间温度、湿度、16-28°C 整数控制、HomeKit 半度兼容、实体标识和总控模式切换行为；
+  增加稳定能力列表、通风/除湿状态和错误模式防护测试。
+
 ## 1.4.5 - Native climate temperature API
 
 - 房间温控器迁移到 HA 2026.11 的 `native_current_temperature`、`native_target_temperature`
