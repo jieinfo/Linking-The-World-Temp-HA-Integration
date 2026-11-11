@@ -73,7 +73,7 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
     @property
     def hvac_modes(self) -> list[HVACMode]:
         """Expose stable power-only modes; the system select owns operation mode."""
-        return [HVACMode.OFF, HVACMode.HEAT_COOL]
+        return [HVACMode.OFF, HVACMode.AUTO]
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -82,13 +82,13 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
             self.hub.state.power, self.hub.state.mode
         ):
             return HVACMode.OFF
-        return HVACMode.HEAT_COOL
+        return HVACMode.AUTO
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.OFF:
             await self.hub.async_set_thermostat_power(self.mac_hex, False)
             return
-        if hvac_mode != HVACMode.HEAT_COOL:
+        if hvac_mode != HVACMode.AUTO:
             raise HomeAssistantError("房间温控面板的运行模式由科技系统总控选择")
         if not can_operate_room_thermostat(
             self.hub.state.power, self.hub.state.mode
