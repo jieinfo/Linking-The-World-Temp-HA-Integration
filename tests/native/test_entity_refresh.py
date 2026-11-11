@@ -228,7 +228,7 @@ async def test_disconnect_and_first_verified_report_refresh_all_entities(
     await fake_controller.async_send_status(_thermostat_status(hub, PANEL_ONE))
     await _wait_for(lambda: hub.thermostats[PANEL_ONE].available)
     await hass.async_block_till_done()
-    assert hass.states.get(climate_id).state == "cool"
+    assert hass.states.get(climate_id).state == "auto"
     assert hass.states.get(other_id).state == "unavailable"
 
 

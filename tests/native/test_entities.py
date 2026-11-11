@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from homeassistant.components import climate, select, switch
+from homeassistant.components.climate.const import HVACMode
 from homeassistant.const import ATTR_TEMPERATURE
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
@@ -15,6 +16,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 import custom_components.linking_the_world_temp_ha.hub as hub_module
+from custom_components.linking_the_world_temp_ha.climate import RoomThermostat
 from custom_components.linking_the_world_temp_ha.command_queue import QueuedCommand
 from custom_components.linking_the_world_temp_ha.const import DOMAIN
 from custom_components.linking_the_world_temp_ha.entity import LinkingThermostatEntity
@@ -192,7 +194,7 @@ async def test_thermostat_power_service_skips_an_already_applied_state(
     await hass.services.async_call(
         climate.DOMAIN,
         climate.SERVICE_SET_HVAC_MODE,
-        {"entity_id": climate_entity, "hvac_mode": "cool"},
+        {"entity_id": climate_entity, "hvac_mode": "auto"},
         blocking=True,
     )
 
@@ -235,12 +237,12 @@ async def test_room_panel_can_turn_on_while_system_power_remains_off(
     )
     state = hass.states.get(climate_entity)
     assert state is not None
-    assert state.attributes["hvac_modes"] == ["off", "cool", "heat"]
+    assert state.attributes["hvac_modes"] == ["off", "auto"]
 
     await hass.services.async_call(
         climate.DOMAIN,
         climate.SERVICE_SET_HVAC_MODE,
-        {"entity_id": climate_entity, "hvac_mode": "cool"},
+        {"entity_id": climate_entity, "hvac_mode": "auto"},
         blocking=True,
     )
 
@@ -249,7 +251,76 @@ async def test_room_panel_can_turn_on_while_system_power_remains_off(
     assert commands == [(bytes.fromhex(mac_hex), 2)]
     state = hass.states.get(climate_entity)
     assert state is not None
-    assert state.state == "cool"
+    assert state.state == "auto"
+
+
+@pytest.mark.parametrize(
+    "unsupported_mode",
+    [
+        HVACMode.HEAT_COOL,
+        HVACMode.COOL,
+        HVACMode.HEAT,
+        HVACMode.FAN_ONLY,
+        HVACMode.DRY,
+    ],
+)
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_room_climate_delegates_cooling_and_heating_to_system_mode(
+    hass, setup_integration, fake_controller, unsupported_mode
+):
+    """Room Climate exposes power only and never changes the system mode."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=False)
+    )
+    await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
+    await hass.async_block_till_done()
+
+    climate_entity = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
+    )
+    state = hass.states.get(climate_entity)
+    assert state is not None
+    assert state.attributes["hvac_modes"] == ["off", "auto"]
+    assert state.state == "off"
+
+    room_entity = RoomThermostat(hub, mac_hex)
+    received_before = len(fake_controller.received_frames)
+    with pytest.raises(HomeAssistantError, match="由科技系统总控选择"):
+        await room_entity.async_set_hvac_mode(unsupported_mode)
+    assert len(fake_controller.received_frames) == received_before
+    assert hub.state.mode == "cool"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_room_climate_stays_off_until_system_state_is_verified(
+    hass, setup_integration, fake_controller
+):
+    """An unverified controller cannot enable a room panel."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=False)
+    )
+    await _wait_for(lambda: mac_hex in hub.thermostats)
+    await hass.async_block_till_done()
+
+    climate_entity = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
+    )
+    state = hass.states.get(climate_entity)
+    assert state is not None
+    assert state.state == "unavailable"
+    assert state.attributes["hvac_modes"] == ["off", "auto"]
+
+    room_entity = RoomThermostat(hub, mac_hex)
+    assert room_entity.hvac_mode == HVACMode.OFF
+    received_before = len(fake_controller.received_frames)
+    with pytest.raises(HomeAssistantError, match="只能跟随当前科技系统模式"):
+        await room_entity.async_set_hvac_mode(HVACMode.AUTO)
+    assert len(fake_controller.received_frames) == received_before
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
@@ -286,7 +357,7 @@ async def test_opposite_thermostat_power_request_is_applied_after_pending_ack(
     await hass.services.async_call(
         climate.DOMAIN,
         climate.SERVICE_SET_HVAC_MODE,
-        {"entity_id": climate_entity, "hvac_mode": "cool"},
+        {"entity_id": climate_entity, "hvac_mode": "auto"},
         blocking=True,
     )
     await _wait_for(lambda: power_commands == [2])
@@ -347,7 +418,7 @@ async def test_queued_panel_enable_rechecks_the_operating_mode_before_send(
     await hass.services.async_call(
         climate.DOMAIN,
         climate.SERVICE_SET_HVAC_MODE,
-        {"entity_id": climate_entity, "hvac_mode": "cool"},
+        {"entity_id": climate_entity, "hvac_mode": "auto"},
         blocking=True,
     )
 
@@ -1118,7 +1189,7 @@ async def test_unload_during_mode_transition_stops_without_later_commands(
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
-async def test_dynamic_climate_and_filtered_sensors_follow_app_pushes(
+async def test_climate_and_filtered_sensors_follow_app_pushes(
     hass, setup_integration, fake_controller
 ):
     """A controller-discovered panel adds native entities and filters valid samples."""
@@ -1157,7 +1228,7 @@ async def test_dynamic_climate_and_filtered_sensors_follow_app_pushes(
     assert state.attributes["min_temp"] == 16
     assert state.attributes["max_temp"] == 28
     assert state.attributes["target_temp_step"] == 1
-    assert state.state == "cool"
+    assert state.state == "auto"
     # Climate exposes the latest raw panel report. Automation sensors use the
     # three-sample median so transient changes do not trigger automations.
     assert float(state.attributes["current_temperature"]) == 29.4
@@ -1181,21 +1252,21 @@ async def test_dynamic_climate_and_filtered_sensors_follow_app_pushes(
     await hass.async_block_till_done()
     state = hass.states.get(climate_entity)
     assert state.state == "off"
-    assert state.attributes["hvac_modes"] == ["off", "cool", "heat"]
+    assert state.attributes["hvac_modes"] == ["off", "auto"]
 
     await fake_controller.async_send_status(_system_status(hub, power=True, mode=4))
     await _wait_for(lambda: hub.state.mode == "dehumidify")
     await hass.async_block_till_done()
     state = hass.states.get(climate_entity)
     assert state.state == "off"
-    assert state.attributes["hvac_modes"] == ["off", "cool", "heat"]
+    assert state.attributes["hvac_modes"] == ["off", "auto"]
 
     received_before = len(fake_controller.received_frames)
     with pytest.raises(HomeAssistantError, match="只能跟随当前科技系统模式"):
         await hass.services.async_call(
             climate.DOMAIN,
             climate.SERVICE_SET_HVAC_MODE,
-            {"entity_id": climate_entity, "hvac_mode": "heat"},
+            {"entity_id": climate_entity, "hvac_mode": "auto"},
             blocking=True,
         )
     await hass.async_block_till_done()

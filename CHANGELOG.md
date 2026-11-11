@@ -1,5 +1,20 @@
 # Linking The World Temp HA changelog
 
+## 1.5.0 - Standard HomeKit auto mode
+
+- 房间 Climate 的稳定能力改为标准 `关闭/自动`，Home Assistant 和 HomeKit 不再显示“自动热冷”。
+- “自动”只表示开启房间温控面板；制冷、制热、通风和除湿仍统一由科技系统总控的运行模式
+  选择器决定。
+- 保留房间实体标识、温度控制、HomeKit 原生恒温器圆盘、主机确认和通风/除湿强制关闭逻辑。
+
+## 1.4.7 - Delegated room Climate mode
+
+- 房间 Climate 固定公开“关闭/自动热冷”能力，只负责温控面板开关和目标温度。
+- 制冷、制热、通风和除湿统一交由科技系统总控的运行模式选择器控制，房间 Climate 不再发送
+  制冷或制热模式命令。
+- 保留房间实体标识、温度范围、HomeKit 半度兼容、主机确认和通风/除湿强制关闭逻辑；增加
+  旧模式请求、未确认主机状态和 HomeKit 稳定模式映射测试。
+
 ## 1.4.6 - Stable HomeKit room modes
 
 - 房间 Climate 始终公开 `关闭`、`制冷`和`制热`三种稳定能力，避免 HomeKit 在启动/重连时

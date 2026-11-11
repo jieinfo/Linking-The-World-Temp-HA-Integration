@@ -15,11 +15,6 @@ from .entity import LinkingThermostatEntity
 from .hub import LinkingTempHub
 from .thermostat_policy import can_operate_room_thermostat
 
-MODE_TO_HVAC = {
-    "cool": HVACMode.COOL,
-    "heat": HVACMode.HEAT,
-}
-
 
 class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
     """A room panel controlled by the system-wide operating mode."""
@@ -77,8 +72,8 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
 
     @property
     def hvac_modes(self) -> list[HVACMode]:
-        """Expose a stable capability set so HomeKit keeps one mode map."""
-        return [HVACMode.OFF, HVACMode.COOL, HVACMode.HEAT]
+        """Expose stable power-only modes; the system select owns operation mode."""
+        return [HVACMode.OFF, HVACMode.AUTO]
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -87,20 +82,16 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
             self.hub.state.power, self.hub.state.mode
         ):
             return HVACMode.OFF
-        mode = self.hub.state.mode
-        return MODE_TO_HVAC[mode] if mode is not None else HVACMode.OFF
+        return HVACMode.AUTO
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.OFF:
             await self.hub.async_set_thermostat_power(self.mac_hex, False)
             return
-        mode = self.hub.state.mode
-        active_mode = MODE_TO_HVAC.get(mode) if mode is not None else None
-        if (
-            active_mode != hvac_mode
-            or not can_operate_room_thermostat(
-                self.hub.state.power, self.hub.state.mode
-            )
+        if hvac_mode != HVACMode.AUTO:
+            raise HomeAssistantError("房间温控面板的运行模式由科技系统总控选择")
+        if not can_operate_room_thermostat(
+            self.hub.state.power, self.hub.state.mode
         ):
             raise HomeAssistantError("房间温控面板只能跟随当前科技系统模式")
         await self.hub.async_set_thermostat_power(self.mac_hex, True)
