@@ -1,12 +1,5 @@
 # Linking The World Temp HA changelog
 
-## 1.6.0 - System Climate mode control
-
-- 新增科技系统总控 Climate，提供制冷、制热、通风和除湿四种固定运行模式。
-- 总控 Climate 只切换运行模式，不控制系统电源；总控开关继续由原有独立开关负责。
-- 系统关闭时 Climate 保留上一次运行模式，并继续复用原有模式切换、命令确认和电源恢复事务。
-- 温度、湿度、CO₂、PM2.5 传感器实体保持原样；原运行模式选择器继续保留以兼容现有自动化。
-
 ## 1.5.0 - Standard HomeKit auto mode
 
 - 房间 Climate 的稳定能力改为标准 `关闭/自动`，Home Assistant 和 HomeKit 不再显示“自动热冷”。

@@ -996,63 +996,6 @@ async def test_mode_select_keeps_all_options_while_system_runs(
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
-async def test_system_climate_controls_mode_without_changing_system_power(
-    hass, setup_integration, fake_controller
-) -> None:
-    """The total Climate maps modes while the existing power switch owns power."""
-    hub = setup_integration.hub
-    hub.command_min_interval = 0
-    controller = {"power": False, "mode": 1}
-    commands: list[tuple[int, int | None]] = []
-
-    async def acknowledge_mode(frame) -> None:
-        fields = parse_tlvs(frame.body)
-        if fields.get(0x0004) != hub.tech_system_mac:
-            return
-        command = fields.get(0x0009, b"\x00")[0]
-        value_bytes = fields.get(0x000A)
-        value = value_bytes[0] if value_bytes else None
-        commands.append((command, value))
-        if command == 3 and value is not None:
-            controller["mode"] = value
-        await fake_controller.async_send_status(
-            _system_status(
-                hub,
-                power=controller["power"],
-                mode=controller["mode"],
-            )
-        )
-
-    fake_controller.on_command = acknowledge_mode
-    await fake_controller.async_send_status(_system_status(hub, power=False, mode=1))
-    await _wait_for(lambda: hub.available and hub.state.mode == "cool")
-
-    climate_entity = _entity_id(hass, hub.entry.entry_id, "climate", "system_climate")
-    state = hass.states.get(climate_entity)
-    assert state is not None
-    assert state.state == "cool"
-    assert state.attributes["hvac_modes"] == ["cool", "heat", "fan_only", "dry"]
-    assert float(state.attributes["current_temperature"]) == 32.9
-    assert int(state.attributes["current_humidity"]) == 62
-    assert state.attributes["hvac_action"] == "off"
-
-    await hass.services.async_call(
-        climate.DOMAIN,
-        climate.SERVICE_SET_HVAC_MODE,
-        {"entity_id": climate_entity, "hvac_mode": "heat"},
-        blocking=True,
-    )
-    await _wait_for(lambda: hub.state.mode == "heat")
-    assert commands == [(3, 2)]
-    assert hub.state.power == "OFF"
-    assert hass.states.get(climate_entity).state == "heat"
-
-    await fake_controller.async_send_status(_system_status(hub, power=True, mode=2))
-    await _wait_for(lambda: hub.state.power == "ON")
-    assert hass.states.get(climate_entity).attributes["hvac_action"] == "heating"
-
-
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_mode_select_rejects_a_new_transition_while_power_is_changing(
     hass, setup_integration, fake_controller
 ) -> None:

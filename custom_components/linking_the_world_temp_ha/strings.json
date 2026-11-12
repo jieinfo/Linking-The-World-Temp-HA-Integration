@@ -128,7 +128,6 @@
       "filter_fault": {"name": "新风滤网故障状态"}
     },
     "climate": {
-      "system_climate": {"name": "运行模式"},
       "room_thermostat": {"name": "温控"}
     },
     "select": {
