@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from homeassistant.components.climate import ClimateEntity
-from homeassistant.components.climate.const import ClimateEntityFeature, HVACMode
+from homeassistant.components.climate.const import (
+    ClimateEntityFeature,
+    HVACAction,
+    HVACMode,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
@@ -11,9 +15,82 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import THERMOSTAT_MAX_TEMPERATURE, THERMOSTAT_MIN_TEMPERATURE
-from .entity import LinkingThermostatEntity
+from .entity import LinkingTempEntity, LinkingThermostatEntity
 from .hub import LinkingTempHub
 from .thermostat_policy import can_operate_room_thermostat
+
+SYSTEM_MODE_TO_HVAC = {
+    "cool": HVACMode.COOL,
+    "heat": HVACMode.HEAT,
+    "ventilation": HVACMode.FAN_ONLY,
+    "dehumidify": HVACMode.DRY,
+}
+HVAC_TO_SYSTEM_MODE = {value: key for key, value in SYSTEM_MODE_TO_HVAC.items()}
+SYSTEM_MODE_TO_ACTION = {
+    "cool": HVACAction.COOLING,
+    "heat": HVACAction.HEATING,
+    "ventilation": HVACAction.FAN,
+    "dehumidify": HVACAction.DRYING,
+}
+
+
+class SystemClimate(LinkingTempEntity, ClimateEntity):
+    """System-wide operating mode control with the original power switch separate."""
+
+    _attr_translation_key = "system_climate"
+    _attr_supported_features = ClimateEntityFeature(0)
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
+
+    def __init__(self, hub: LinkingTempHub) -> None:
+        super().__init__(hub, "system_climate")
+
+    @property
+    def native_current_temperature(self) -> float | None:
+        return self.hub.state.temperature
+
+    @property
+    def current_humidity(self) -> int | None:
+        return self.hub.state.humidity
+
+    # HA 2026.9/2026.10 still read the old API. Do not define these aliases on
+    # newer HA, whose class-registration hook flags them as deprecated.
+    if not hasattr(ClimateEntity, "native_temperature_unit"):
+
+        @property
+        def native_temperature_unit(self) -> str:
+            return self._attr_native_temperature_unit
+
+        @property
+        def temperature_unit(self) -> str:
+            return self.native_temperature_unit
+
+        @property
+        def current_temperature(self) -> float | None:
+            return self.native_current_temperature
+
+    @property
+    def hvac_modes(self) -> list[HVACMode]:
+        """Expose all stable system modes; power remains a separate switch."""
+        return list(HVAC_TO_SYSTEM_MODE)
+
+    @property
+    def hvac_mode(self) -> HVACMode:
+        mode = self.hub.state.mode
+        if mode is None:
+            return HVACMode.COOL
+        return SYSTEM_MODE_TO_HVAC.get(mode, HVACMode.COOL)
+
+    @property
+    def hvac_action(self) -> HVACAction:
+        mode = self.hub.state.mode
+        if self.hub.state.power != "ON" or mode is None:
+            return HVACAction.OFF
+        return SYSTEM_MODE_TO_ACTION.get(mode, HVACAction.IDLE)
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        if (mode := HVAC_TO_SYSTEM_MODE.get(hvac_mode)) is None:
+            raise HomeAssistantError("科技系统总控 Climate 不负责控制总开关")
+        await self.hub.async_select_mode(mode)
 
 
 class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
@@ -119,6 +196,7 @@ async def async_setup_entry(
         async_add_entities([RoomThermostat(hub, mac) for mac in new_macs])
 
     add_new_entities()
+    async_add_entities([SystemClimate(hub)])
     entry.async_on_unload(
         hub.async_add_listener(add_new_entities, scopes={"discovery"})
     )

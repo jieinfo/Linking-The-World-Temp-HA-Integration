@@ -128,7 +128,10 @@
       "system_fault": {"name": "Controller fault status"},
       "filter_fault": {"name": "Fresh-air filter fault status"}
     },
-    "climate": {"room_thermostat": {"name": "Thermostat"}},
+    "climate": {
+      "system_climate": {"name": "Operating mode"},
+      "room_thermostat": {"name": "Thermostat"}
+    },
     "select": {
       "system_mode": {"name": "Operating mode"},
       "system_scene": {"name": "Scene"}
