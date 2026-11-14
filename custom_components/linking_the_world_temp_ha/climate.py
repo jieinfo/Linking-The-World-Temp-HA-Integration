@@ -36,7 +36,10 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
 
     @property
     def update_scopes(self) -> frozenset[str]:
-        return super().update_scopes | {"room_controls"}
+        return super().update_scopes | {
+            "room_controls",
+            f"thermostat_climate_{self.mac_hex}",
+        }
 
     @property
     def native_current_temperature(self) -> float | None:
