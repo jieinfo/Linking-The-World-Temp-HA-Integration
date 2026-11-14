@@ -8,6 +8,7 @@ import time
 import pytest
 from homeassistant.helpers.entity import Entity
 
+from custom_components.linking_the_world_temp_ha import hub as hub_module
 from custom_components.linking_the_world_temp_ha.protocol import (
     YasHcpFrame,
     parse_tlvs,
@@ -78,6 +79,102 @@ async def test_system_control_change_refreshes_climates_not_room_sensors(
     assert f"thermostat_{PANEL_ONE}_climate" in writes
     assert f"thermostat_{PANEL_TWO}_climate" in writes
     assert not any("automation_" in key for key in writes)
+
+
+async def test_system_control_change_reannounces_climates_after_stable_state(
+    hass, refresh_capture
+):
+    """A delayed room-only write lets HomeKit recover from a transition state."""
+    hub, writes = refresh_capture
+    writes.clear()
+
+    await hub._async_status_received(_system_status(hub, power=False))
+    await hass.async_block_till_done()
+    writes.clear()
+
+    await asyncio.sleep(1.05)
+    await hass.async_block_till_done()
+
+    assert f"thermostat_{PANEL_ONE}_climate" in writes
+    assert f"thermostat_{PANEL_TWO}_climate" in writes
+    assert not any("automation_" in key for key in writes)
+
+
+async def test_system_control_reannounce_is_coalesced(
+    hass, refresh_capture, monkeypatch
+):
+    """Rapid system changes produce one delayed room Climate reannounce."""
+    monkeypatch.setattr(hub_module, "ROOM_CONTROLS_REANNOUNCE_DELAY", 0.05)
+    hub, writes = refresh_capture
+    writes.clear()
+
+    await hub._async_status_received(_system_status(hub, power=False))
+    await hass.async_block_till_done()
+    writes.clear()
+    await hub._async_status_received(_system_status(hub, power=True))
+    await hass.async_block_till_done()
+    writes.clear()
+
+    await asyncio.sleep(0.1)
+    await hass.async_block_till_done()
+
+    climate_writes = [key for key in writes if key.endswith("_climate")]
+    assert climate_writes == [
+        f"thermostat_{PANEL_ONE}_climate",
+        f"thermostat_{PANEL_TWO}_climate",
+    ]
+
+
+async def test_system_control_reannounce_waits_after_last_transition(
+    hass, refresh_capture, monkeypatch
+):
+    """A second transition resets the debounce window instead of firing early."""
+    monkeypatch.setattr(hub_module, "ROOM_CONTROLS_REANNOUNCE_DELAY", 0.1)
+    hub, writes = refresh_capture
+    writes.clear()
+
+    await hub._async_status_received(_system_status(hub, power=False))
+    await hass.async_block_till_done()
+    writes.clear()
+    await asyncio.sleep(0.07)
+
+    await hub._async_status_received(_system_status(hub, power=True))
+    await hass.async_block_till_done()
+    writes.clear()
+    await asyncio.sleep(0.05)
+    await hass.async_block_till_done()
+
+    assert not any(key.endswith("_climate") for key in writes)
+
+    await asyncio.sleep(0.07)
+    await hass.async_block_till_done()
+    climate_writes = [key for key in writes if key.endswith("_climate")]
+    assert climate_writes == [
+        f"thermostat_{PANEL_ONE}_climate",
+        f"thermostat_{PANEL_TWO}_climate",
+    ]
+
+
+async def test_stopping_hub_cancels_room_control_reannounce(
+    hass, refresh_capture, monkeypatch
+):
+    """Stopping the integration must not leave a delayed HomeKit write behind."""
+    monkeypatch.setattr(hub_module, "ROOM_CONTROLS_REANNOUNCE_DELAY", 0.2)
+    hub, writes = refresh_capture
+    writes.clear()
+
+    await hub._async_status_received(_system_status(hub, power=False))
+    await hass.async_block_till_done()
+    task = hub._room_controls_reannounce_task
+    assert task is not None and not task.done()
+
+    await hub.async_stop()
+    writes_after_stop = list(writes)
+    await asyncio.sleep(0.25)
+    await hass.async_block_till_done()
+
+    assert hub._room_controls_reannounce_task is None
+    assert writes == writes_after_stop
 
 
 async def test_repeated_system_report_keeps_freshness_without_entity_writes(

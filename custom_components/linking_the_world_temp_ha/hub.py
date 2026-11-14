@@ -84,6 +84,7 @@ _FLOW_SOURCE_REAUTH = "reauth"
 _FLOW_SOURCE_RECONFIGURE = "reconfigure"
 SESSION_IDLE_INTERVAL = 1.0
 SESSION_ACTIVE_INTERVAL = 0.25
+ROOM_CONTROLS_REANNOUNCE_DELAY = 1.0
 
 
 @dataclass
@@ -170,6 +171,7 @@ class LinkingTempHub:
         self._session_authenticated = False
         self._reauth_required = False
         self._reauth_watcher: asyncio.Task[None] | None = None
+        self._room_controls_reannounce_task: asyncio.Task[None] | None = None
         self._last_valid_status_at: float | None = None
         self._last_system_status_at: float | None = None
         self._session_started_at: float | None = None
@@ -190,6 +192,14 @@ class LinkingTempHub:
     async def async_stop(self) -> None:
         """Stop the session and mark all state unavailable."""
         self._stop.set()
+        reannounce_task = self._room_controls_reannounce_task
+        self._room_controls_reannounce_task = None
+        if (
+            reannounce_task is not None
+            and reannounce_task is not asyncio.current_task()
+        ):
+            reannounce_task.cancel()
+            await asyncio.gather(reannounce_task, return_exceptions=True)
         watcher = self._reauth_watcher
         self._reauth_watcher = None
         if watcher is not None and watcher is not asyncio.current_task():
@@ -238,6 +248,28 @@ class LinkingTempHub:
         diagnostics.
         """
         self._notify("room_controls")
+
+    @callback
+    def _schedule_room_controls_reannounce(self) -> None:
+        """Reannounce room Climate after a system transition settles."""
+        task = self._room_controls_reannounce_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._room_controls_reannounce_task = self.entry.async_create_background_task(
+            self.hass,
+            self._async_reannounce_room_controls(),
+            f"{DOMAIN}_{self.entry.entry_id}_room_controls_reannounce",
+        )
+
+    async def _async_reannounce_room_controls(self) -> None:
+        """Give HomeKit a second, stable room Climate state after transitions."""
+        try:
+            await asyncio.sleep(ROOM_CONTROLS_REANNOUNCE_DELAY)
+            if not self._stop.is_set() and self.available:
+                self._notify("room_controls")
+        finally:
+            if self._room_controls_reannounce_task is asyncio.current_task():
+                self._room_controls_reannounce_task = None
 
     @property
     def available(self) -> bool:
@@ -1295,6 +1327,8 @@ class LinkingTempHub:
                     scopes.add("system")
             if previous_controls != (self.state.power, self.state.mode):
                 scopes.add("room_controls")
+                if was_verified:
+                    self._schedule_room_controls_reannounce()
             if self.state.system_fault_code is not None:
                 self.repairs.set_fault_code("system", self.state.system_fault_code)
             if self.state.filter_fault_code is not None:

@@ -1,5 +1,11 @@
 # Linking The World Temp HA changelog
 
+## 1.5.1 - HomeKit room thermostat recovery
+
+- 科技系统总开关或运行模式完成状态变化后，延迟合并重通知房间 Climate，等待主机的总控与房间面板状态稳定后再同步 HomeKit。
+- 只刷新房间温控器，不刷新温湿度、诊断和其他无关实体；快速连续切换只产生一次延迟重通知。
+- 集成停止、重载或卸载时取消待执行的重通知任务，避免后台任务残留。
+
 ## 1.5.0 - Standard HomeKit auto mode
 
 - 房间 Climate 的稳定能力改为标准 `关闭/自动`，Home Assistant 和 HomeKit 不再显示“自动热冷”。
