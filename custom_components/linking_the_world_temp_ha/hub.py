@@ -172,7 +172,6 @@ class LinkingTempHub:
         self._reauth_required = False
         self._reauth_watcher: asyncio.Task[None] | None = None
         self._room_controls_reannounce_task: asyncio.Task[None] | None = None
-        self._thermostat_reannounce_tasks: dict[str, asyncio.Task[None]] = {}
         self._last_valid_status_at: float | None = None
         self._last_system_status_at: float | None = None
         self._session_started_at: float | None = None
@@ -201,13 +200,6 @@ class LinkingTempHub:
         ):
             reannounce_task.cancel()
             await asyncio.gather(reannounce_task, return_exceptions=True)
-        thermostat_tasks = tuple(self._thermostat_reannounce_tasks.values())
-        self._thermostat_reannounce_tasks.clear()
-        for task in thermostat_tasks:
-            if task is not asyncio.current_task():
-                task.cancel()
-        if thermostat_tasks:
-            await asyncio.gather(*thermostat_tasks, return_exceptions=True)
         watcher = self._reauth_watcher
         self._reauth_watcher = None
         if watcher is not None and watcher is not asyncio.current_task():
@@ -278,31 +270,6 @@ class LinkingTempHub:
         finally:
             if self._room_controls_reannounce_task is asyncio.current_task():
                 self._room_controls_reannounce_task = None
-
-    @callback
-    def _schedule_thermostat_reannounce(self, mac_hex: str) -> None:
-        """Reannounce one room Climate after its panel state settles."""
-        task = self._thermostat_reannounce_tasks.get(mac_hex)
-        if task is not None and not task.done():
-            task.cancel()
-        self._thermostat_reannounce_tasks[mac_hex] = (
-            self.entry.async_create_background_task(
-                self.hass,
-                self._async_reannounce_thermostat(mac_hex),
-                f"{DOMAIN}_{self.entry.entry_id}_thermostat_reannounce",
-            )
-        )
-
-    async def _async_reannounce_thermostat(self, mac_hex: str) -> None:
-        """Give HomeKit a second authoritative state for one room panel."""
-        task = asyncio.current_task()
-        try:
-            await asyncio.sleep(ROOM_CONTROLS_REANNOUNCE_DELAY)
-            if not self._stop.is_set() and self.available:
-                self._notify(f"thermostat_climate_{mac_hex}")
-        finally:
-            if self._thermostat_reannounce_tasks.get(mac_hex) is task:
-                self._thermostat_reannounce_tasks.pop(mac_hex, None)
 
     @property
     def available(self) -> bool:
@@ -1261,12 +1228,6 @@ class LinkingTempHub:
                         self.command_confirmation_timeout,
                         consecutive_timeouts,
                     )
-                    if target.startswith("thermostat_"):
-                        mac_hex = target.removeprefix("thermostat_")
-                        self._notify(f"thermostat_climate_{mac_hex}")
-                        self._schedule_thermostat_reannounce(
-                            mac_hex
-                        )
                 self._record_command_queue_depth()
         if expired:
             self._notify("diagnostics")
@@ -1417,8 +1378,6 @@ class LinkingTempHub:
                 now_utc,
                 now_monotonic=now_monotonic,
             )
-            if previous is not None and previous.power != thermostat.power:
-                self._schedule_thermostat_reannounce(mac_hex)
             reported_temperature = thermostat.current_temperature
             reported_humidity = thermostat.humidity
             measurements_valid = preserve_valid_thermostat_measurements(
