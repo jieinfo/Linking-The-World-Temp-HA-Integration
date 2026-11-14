@@ -1,11 +1,5 @@
 # Linking The World Temp HA changelog
 
-## 1.5.2 - HomeKit room Climate resynchronization
-
-- 房间温控面板电源状态确认后，延迟且防抖地重通知对应的 Climate，不刷新该房间温湿度或其他房间实体。
-- 温度命令最终确认超时后，立即并延迟重通知对应 Climate，让 HomeKit 回到主机最后确认的温度和“关闭/自动”状态。
-- 保持主机确认优先，不把未确认的面板开启或目标温度伪装成真实状态；重载和卸载时取消房间重通知任务。
-
 ## 1.5.1 - HomeKit room thermostat recovery
 
 - 科技系统总开关或运行模式完成状态变化后，延迟合并重通知房间 Climate，等待主机的总控与房间面板状态稳定后再同步 HomeKit。

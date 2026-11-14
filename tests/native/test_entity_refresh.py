@@ -155,48 +155,6 @@ async def test_system_control_reannounce_waits_after_last_transition(
     ]
 
 
-async def test_panel_power_change_reannounces_only_that_climate(
-    hass, refresh_capture, monkeypatch
-):
-    """A panel power confirmation gets a delayed HomeKit-only refresh."""
-    monkeypatch.setattr(hub_module, "ROOM_CONTROLS_REANNOUNCE_DELAY", 0.05)
-    hub, writes = refresh_capture
-
-    await hub._async_status_received(_thermostat_status(hub, PANEL_ONE, power=False))
-    await hass.async_block_till_done()
-    writes.clear()
-    await hub._async_status_received(_thermostat_status(hub, PANEL_ONE, power=True))
-    await hass.async_block_till_done()
-    writes.clear()
-
-    await asyncio.sleep(0.1)
-    await hass.async_block_till_done()
-
-    assert writes == [f"thermostat_{PANEL_ONE}_climate"]
-
-
-async def test_final_temperature_timeout_reannounces_only_failed_panel(
-    hass, refresh_capture, fake_controller, monkeypatch
-):
-    """A failed setpoint refreshes the authoritative room state for HomeKit."""
-    hub, writes = refresh_capture
-    monkeypatch.setattr(hub_module, "ROOM_CONTROLS_REANNOUNCE_DELAY", 0.01)
-    writes.clear()
-
-    await hub.async_set_thermostat_temperature(PANEL_ONE, 23)
-    writes.clear()
-    target = f"thermostat_{PANEL_ONE}"
-    await hub._async_expire_pending(hub._pending[target].deadline + 1)
-    await hub._async_expire_pending(hub._pending[target].deadline + 1)
-    await hass.async_block_till_done()
-
-    assert {
-        key for key in writes if key.endswith("_climate")
-    } == {f"thermostat_{PANEL_ONE}_climate"}
-    assert not any("automation_" in key for key in writes)
-    assert not any(PANEL_TWO in key for key in writes)
-
-
 async def test_stopping_hub_cancels_room_control_reannounce(
     hass, refresh_capture, monkeypatch
 ):
