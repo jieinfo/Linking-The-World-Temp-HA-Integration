@@ -230,7 +230,13 @@ class LinkingTempHub:
 
     @callback
     def async_refresh_room_controls(self) -> None:
-        """Refresh room Climate entities without unrelated sensors/diagnostics."""
+        """Reannounce room Climate capabilities after platform setup.
+
+        HomeKit can restore a cached target mode while the native platforms are
+        still being registered. A room-only reannounce aligns that cache with
+        the current dynamic HVAC mode list without refreshing measurements or
+        diagnostics.
+        """
         self._notify("room_controls")
 
     @property
