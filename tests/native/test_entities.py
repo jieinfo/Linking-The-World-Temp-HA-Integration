@@ -126,7 +126,9 @@ async def test_room_panel_device_info_uses_registered_parent_device_id(
         ),
     )
     await fake_controller.async_send_status(_system_status(hub, power=True))
-    await fake_controller.async_send_status(_thermostat_status(hub, mac_hex))
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=False)
+    )
     await _wait_for(lambda: mac_hex in hub.thermostats)
 
     device_info = LinkingThermostatEntity(hub, mac_hex, "relationship").device_info
@@ -254,6 +256,66 @@ async def test_room_panel_can_turn_on_while_system_power_remains_off(
     assert state.state == "auto"
 
 
+@pytest.mark.parametrize("mode", [3, 4])
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_room_climate_follows_panel_power_in_non_temperature_modes(
+    hass, setup_integration, fake_controller, mode
+):
+    """Room Climate does not derive its state from the system operating mode."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=mode))
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=True)
+    )
+    await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
+    await hass.async_block_till_done()
+
+    climate_entity = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
+    )
+    state = hass.states.get(climate_entity)
+    assert state is not None
+    assert state.state == "auto"
+    assert state.attributes["hvac_modes"] == ["off", "auto"]
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_room_panel_can_turn_on_while_system_is_dehumidifying(
+    hass, setup_integration, fake_controller
+):
+    """A panel power request is not blocked by the system operating mode."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=4))
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=False)
+    )
+    await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
+    await hass.async_block_till_done()
+
+    async def acknowledge_panel_power_on(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        if fields.get(0x0004) == bytes.fromhex(mac_hex) and fields.get(0x0009) == b"\x02":
+            await fake_controller.async_send_status(
+                _thermostat_status(hub, mac_hex, power=True)
+            )
+
+    fake_controller.on_command = acknowledge_panel_power_on
+    climate_entity = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
+    )
+    await hass.services.async_call(
+        climate.DOMAIN,
+        climate.SERVICE_SET_HVAC_MODE,
+        {"entity_id": climate_entity, "hvac_mode": "auto"},
+        blocking=True,
+    )
+
+    await _wait_for(lambda: hub.thermostats[mac_hex].power == "ON")
+    assert hub.state.mode == "dehumidify"
+
+
 @pytest.mark.parametrize(
     "unsupported_mode",
     [
@@ -288,7 +350,7 @@ async def test_room_climate_delegates_cooling_and_heating_to_system_mode(
 
     room_entity = RoomThermostat(hub, mac_hex)
     received_before = len(fake_controller.received_frames)
-    with pytest.raises(HomeAssistantError, match="由科技系统总控选择"):
+    with pytest.raises(HomeAssistantError, match="仅支持开启和关闭"):
         await room_entity.async_set_hvac_mode(unsupported_mode)
     assert len(fake_controller.received_frames) == received_before
     assert hub.state.mode == "cool"
@@ -318,7 +380,7 @@ async def test_room_climate_stays_off_until_system_state_is_verified(
     room_entity = RoomThermostat(hub, mac_hex)
     assert room_entity.hvac_mode == HVACMode.OFF
     received_before = len(fake_controller.received_frames)
-    with pytest.raises(HomeAssistantError, match="只能跟随当前科技系统模式"):
+    with pytest.raises(HomeAssistantError, match="主机尚未连接或协议状态尚未验证"):
         await room_entity.async_set_hvac_mode(HVACMode.AUTO)
     assert len(fake_controller.received_frames) == received_before
 
@@ -384,10 +446,10 @@ async def test_opposite_thermostat_power_request_is_applied_after_pending_ack(
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
-async def test_queued_panel_enable_rechecks_the_operating_mode_before_send(
+async def test_queued_panel_enable_survives_a_system_mode_change(
     hass, setup_integration, fake_controller
 ):
-    """An enable queued in cooling cannot bypass a later dehumidify interlock."""
+    """A queued panel enable is independent from later system mode changes."""
     hub = setup_integration.hub
     mac_hex = "ff00ffffffff01ff"
     await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
@@ -399,12 +461,17 @@ async def test_queued_panel_enable_rechecks_the_operating_mode_before_send(
 
     commands: list[int] = []
 
-    async def record_commands(frame) -> None:
+    async def acknowledge_commands(frame) -> None:
         fields = parse_tlvs(frame.body)
         if fields.get(0x0004) == bytes.fromhex(mac_hex):
-            commands.append(fields.get(0x0009, b"\x00")[0])
+            command = fields.get(0x0009, b"\x00")[0]
+            commands.append(command)
+            if command == 2:
+                await fake_controller.async_send_status(
+                    _thermostat_status(hub, mac_hex, target=23, power=True)
+                )
 
-    fake_controller.on_command = record_commands
+    fake_controller.on_command = acknowledge_commands
     climate_entity = _entity_id(
         hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
     )
@@ -426,9 +493,15 @@ async def test_queued_panel_enable_rechecks_the_operating_mode_before_send(
     await fake_controller.async_send_status(
         _thermostat_status(hub, mac_hex, target=23, power=False)
     )
-    await _wait_for(lambda: not hub._pending and not hub._queued, timeout=2)
+    await _wait_for(
+        lambda: commands == [3, 2]
+        and hub.thermostats[mac_hex].power == "ON"
+        and not hub._pending
+        and not hub._queued,
+        timeout=2,
+    )
 
-    assert commands == [3]
+    assert hub.state.mode == "dehumidify"
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
@@ -619,7 +692,9 @@ async def test_latest_temperature_replaces_a_queue_waiting_for_dispatch(
     hub = setup_integration.hub
     mac_hex = "ff00ffffffff01ff"
     await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
-    await fake_controller.async_send_status(_thermostat_status(hub, mac_hex))
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=False)
+    )
     await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
     await hass.async_block_till_done()
 
@@ -1246,31 +1321,20 @@ async def test_climate_and_filtered_sensors_follow_app_pushes(
     assert float(hass.states.get(climate_entity).attributes["current_temperature"]) == 26.4
     assert int(hass.states.get(climate_entity).attributes["current_humidity"]) == 62
 
-    # The source system forces individual panels off in ventilation/dehumidify.
+    # System operating mode changes do not alter the room panel state.
     await fake_controller.async_send_status(_system_status(hub, power=True, mode=3))
     await _wait_for(lambda: hub.state.mode == "ventilation")
     await hass.async_block_till_done()
     state = hass.states.get(climate_entity)
-    assert state.state == "off"
+    assert state.state == "auto"
     assert state.attributes["hvac_modes"] == ["off", "auto"]
 
     await fake_controller.async_send_status(_system_status(hub, power=True, mode=4))
     await _wait_for(lambda: hub.state.mode == "dehumidify")
     await hass.async_block_till_done()
     state = hass.states.get(climate_entity)
-    assert state.state == "off"
+    assert state.state == "auto"
     assert state.attributes["hvac_modes"] == ["off", "auto"]
-
-    received_before = len(fake_controller.received_frames)
-    with pytest.raises(HomeAssistantError, match="只能跟随当前科技系统模式"):
-        await hass.services.async_call(
-            climate.DOMAIN,
-            climate.SERVICE_SET_HVAC_MODE,
-            {"entity_id": climate_entity, "hvac_mode": "auto"},
-            blocking=True,
-        )
-    await hass.async_block_till_done()
-    assert len(fake_controller.received_frames) == received_before
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
@@ -1442,7 +1506,9 @@ async def test_control_guards_reject_invalid_or_unsafe_operations(
     hub = setup_integration.hub
     mac_hex = "ff00ffffffff03ff"
     await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
-    await fake_controller.async_send_status(_thermostat_status(hub, mac_hex))
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=False)
+    )
     await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
 
     with pytest.raises(HomeAssistantError, match="请先关闭"):
@@ -1464,10 +1530,9 @@ async def test_control_guards_reject_invalid_or_unsafe_operations(
     await _wait_for(lambda: hub.state.mode == "dehumidify")
     received_before = len(fake_controller.received_frames)
     blocked_before = hub.health.snapshot()["counters"]["commands_blocked"]
-    with pytest.raises(HomeAssistantError, match="当前为除湿模式"):
-        await hub.async_set_thermostat_power(mac_hex, True)
-    assert hub.health.snapshot()["counters"]["commands_blocked"] == blocked_before + 1
-    assert len(fake_controller.received_frames) == received_before
+    await hub.async_set_thermostat_power(mac_hex, True)
+    await _wait_for(lambda: len(fake_controller.received_frames) > received_before)
+    assert hub.health.snapshot()["counters"]["commands_blocked"] == blocked_before
 
     hub.allow_control = False
     assert hub.control_permission == "read_only"

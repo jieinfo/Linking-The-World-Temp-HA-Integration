@@ -13,11 +13,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import THERMOSTAT_MAX_TEMPERATURE, THERMOSTAT_MIN_TEMPERATURE
 from .entity import LinkingThermostatEntity
 from .hub import LinkingTempHub
-from .thermostat_policy import can_operate_room_thermostat
 
 
 class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
-    """A room panel controlled by the system-wide operating mode."""
+    """A room panel with local power and temperature controls."""
 
     _attr_translation_key = "room_thermostat"
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
@@ -33,10 +32,6 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
     @property
     def name(self) -> str:
         return "温控"
-
-    @property
-    def update_scopes(self) -> frozenset[str]:
-        return super().update_scopes | {"room_controls"}
 
     @property
     def native_current_temperature(self) -> float | None:
@@ -78,9 +73,7 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
     @property
     def hvac_mode(self) -> HVACMode:
         thermostat = self.hub.thermostats[self.mac_hex]
-        if thermostat.power != "ON" or not can_operate_room_thermostat(
-            self.hub.state.power, self.hub.state.mode
-        ):
+        if thermostat.power != "ON":
             return HVACMode.OFF
         return HVACMode.AUTO
 
@@ -89,11 +82,7 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
             await self.hub.async_set_thermostat_power(self.mac_hex, False)
             return
         if hvac_mode != HVACMode.AUTO:
-            raise HomeAssistantError("房间温控面板的运行模式由科技系统总控选择")
-        if not can_operate_room_thermostat(
-            self.hub.state.power, self.hub.state.mode
-        ):
-            raise HomeAssistantError("房间温控面板只能跟随当前科技系统模式")
+            raise HomeAssistantError("房间温控面板仅支持开启和关闭")
         await self.hub.async_set_thermostat_power(self.mac_hex, True)
 
     async def async_set_temperature(self, **kwargs) -> None:

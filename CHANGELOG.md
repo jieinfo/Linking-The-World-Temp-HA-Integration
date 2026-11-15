@@ -1,5 +1,12 @@
 # Linking The World Temp HA changelog
 
+## Unreleased - Independent room Climate control
+
+- 房间 Climate 改为只根据对应温控面板自身的主机上报决定“关闭/自动”，不再因科技系统总控
+  的运行模式变化而改写状态或阻止面板开机命令。
+- 移除总控模式变化对房间 Climate 的额外通知，减少 HomeKit Bridge 收到的无关状态事件；
+  面板最终状态仍以主机确认上报为准。
+
 ## 1.5.0 - Standard HomeKit auto mode
 
 - 房间 Climate 的稳定能力改为标准 `关闭/自动`，Home Assistant 和 HomeKit 不再显示“自动热冷”。

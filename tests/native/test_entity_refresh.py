@@ -68,15 +68,14 @@ async def test_environment_report_does_not_refresh_room_entities(hass, refresh_c
 
 
 @pytest.mark.parametrize("power,mode", [(False, 1), (True, 2), (True, 3), (True, 4)])
-async def test_system_control_change_refreshes_climates_not_room_sensors(
+async def test_system_control_change_does_not_refresh_room_climates(
     hass, refresh_capture, power, mode
 ):
     hub, writes = refresh_capture
     await hub._async_status_received(_system_status(hub, power=power, mode=mode))
     await hass.async_block_till_done()
 
-    assert f"thermostat_{PANEL_ONE}_climate" in writes
-    assert f"thermostat_{PANEL_TWO}_climate" in writes
+    assert not any(key.startswith("thermostat_") for key in writes)
     assert not any("automation_" in key for key in writes)
 
 
@@ -140,21 +139,6 @@ async def test_pending_system_power_updates_mode_hint_before_confirmation(
     await hub._async_status_received(_system_status(hub, power=False))
     await hass.async_block_till_done()
     assert hass.states.get(entity_id).attributes["can_change_mode"]
-
-
-async def test_room_control_reannounce_refreshes_only_climates(
-    hass, refresh_capture
-):
-    """A post-setup reannounce gives HomeKit fresh climate capabilities only."""
-    hub, writes = refresh_capture
-    writes.clear()
-    hub.async_refresh_room_controls()
-    await hass.async_block_till_done()
-
-    assert f"thermostat_{PANEL_ONE}_climate" in writes
-    assert f"thermostat_{PANEL_TWO}_climate" in writes
-    assert not any("automation_" in key for key in writes)
-    assert "system_temperature" not in writes
 
 
 async def test_completed_mode_transition_restores_hint_without_another_report(
