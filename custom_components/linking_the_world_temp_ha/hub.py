@@ -75,7 +75,6 @@ from .protocol import (
 )
 from .repairs import RepairManager
 from .runtime import ConnectionStage, FailureKind
-from .thermostat_policy import room_thermostat_block_reason
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -227,17 +226,6 @@ class LinkingTempHub:
         for listener, subscribed in tuple(self._listeners.items()):
             if not scopes or subscribed is None or not subscribed.isdisjoint(scopes):
                 listener()
-
-    @callback
-    def async_refresh_room_controls(self) -> None:
-        """Reannounce room Climate capabilities after platform setup.
-
-        HomeKit can restore a cached target mode while the native platforms are
-        still being registered. A room-only reannounce aligns that cache with
-        the current dynamic HVAC mode list without refreshing measurements or
-        diagnostics.
-        """
-        self._notify("room_controls")
 
     @property
     def available(self) -> bool:
@@ -466,10 +454,6 @@ class LinkingTempHub:
     async def async_set_thermostat_power(self, mac_hex: str, enabled: bool) -> None:
         thermostat = self._require_thermostat(mac_hex)
         target = f"thermostat_{mac_hex}"
-        send_guard = self._room_thermostat_block_reason if enabled else None
-        if send_guard is not None and (reason := send_guard()):
-            self.health.increment("commands_blocked")
-            raise HomeAssistantError(reason)
         expected_power = "ON" if enabled else "OFF"
         label = f"{self.thermostat_name(thermostat)} 开关"
         if thermostat.power == expected_power and await self._async_confirm_unchanged(
@@ -483,7 +467,6 @@ class LinkingTempHub:
             thermostat.mac,
             COMMAND_POWER_ON if enabled else COMMAND_POWER_OFF,
             coalesce=True,
-            send_guard=send_guard,
         )
 
     async def _async_confirm_unchanged(
@@ -507,13 +490,6 @@ class LinkingTempHub:
             self.last_command_status = f"confirmed:{label}"
             self._notify("diagnostics")
             return True
-
-    def _room_thermostat_block_reason(self) -> str | None:
-        """Return why a room panel cannot be enabled at send time."""
-        pending_system = self._pending.get("system")
-        if pending_system is not None and pending_system.expected.get("power") == "OFF":
-            return "科技系统总开关正在关闭，房间温控面板不能开启"
-        return room_thermostat_block_reason(self.state.power, self.state.mode)
 
     async def async_set_thermostat_temperature(
         self, mac_hex: str, temperature: float
@@ -1275,7 +1251,6 @@ class LinkingTempHub:
     async def _async_status_received(self, body: bytes) -> None:
         scopes: set[str] = set()
         was_verified = self.protocol_verified
-        previous_controls = (self.state.power, self.state.mode)
         previous_command_status = self.last_command_status
         now_utc = datetime.now(UTC)
         now_monotonic = time.monotonic()
@@ -1293,8 +1268,6 @@ class LinkingTempHub:
                 if getattr(self.state, name) != value:
                     setattr(self.state, name, value)
                     scopes.add("system")
-            if previous_controls != (self.state.power, self.state.mode):
-                scopes.add("room_controls")
             if self.state.system_fault_code is not None:
                 self.repairs.set_fault_code("system", self.state.system_fault_code)
             if self.state.filter_fault_code is not None:
