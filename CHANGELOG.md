@@ -1,6 +1,6 @@
 # Linking The World Temp HA changelog
 
-## Unreleased - Independent room Climate control
+## 1.5.1 - Independent room Climate control
 
 - 房间 Climate 改为只根据对应温控面板自身的主机上报决定“关闭/自动”，不再因科技系统总控
   的运行模式变化而改写状态或阻止面板开机命令。
