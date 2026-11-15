@@ -1,5 +1,16 @@
 # Linking The World Temp HA changelog
 
+## 1.5.1 - Confirmed room state resynchronization
+
+- 房间 Climate 在变为可用、连接恢复、总控开关/运行模式变化或单面板开关变化后，稳定约 1 秒
+  定向补发一次状态，帮助 HomeKit Bridge 重新读取固定的“关闭/自动”能力和当前状态。
+- 补发按单个房间合并快速变化，不会被普通重复温湿度上报反复推迟，也不会刷新无关传感器、诊断
+  实体或伪造面板恢复；增加真实 Home Assistant HomeKit 恒温器适配器回归测试。
+- 离线或卸载时取消待执行的补发；保持单套房间 Climate、固定“关闭/自动”模式、温度范围与
+  主机确认流程，补发不发送设备控制命令，也不自动重载 HomeKit Bridge。
+- CI 增加 HA 2026.11.1 的 HomeKit 模式/可用性检查。此次验证覆盖 HA 与 HomeKit Bridge
+  的状态同步，Apple 家庭长时间运行后的“未响应”仍需实机持续测试确认。
+
 ## 1.5.0 - Standard HomeKit auto mode
 
 - 房间 Climate 的稳定能力改为标准 `关闭/自动`，Home Assistant 和 HomeKit 不再显示“自动热冷”。
