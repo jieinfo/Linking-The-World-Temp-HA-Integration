@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import UTC, datetime
+from unittest.mock import Mock
 
 import pytest
 from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.event import async_track_state_change_event
 
+from custom_components.linking_the_world_temp_ha import climate as climate_module
 from custom_components.linking_the_world_temp_ha.protocol import (
     YasHcpFrame,
     parse_tlvs,
@@ -155,6 +159,233 @@ async def test_room_control_reannounce_refreshes_only_climates(
     assert f"thermostat_{PANEL_TWO}_climate" in writes
     assert not any("automation_" in key for key in writes)
     assert "system_temperature" not in writes
+
+
+async def test_system_control_change_reannounces_climates_after_stable_state(
+    hass, refresh_capture, monkeypatch
+):
+    """A settled total-control update gives HomeKit a second room state."""
+    monkeypatch.setattr(climate_module, "ROOM_CONTROLS_REANNOUNCE_DELAY", 0.05)
+    hub, writes = refresh_capture
+    writes.clear()
+
+    events = []
+    climate_ids = [
+        _entity_id(hass, hub.entry.entry_id, "climate", f"thermostat_{mac}_climate")
+        for mac in (PANEL_ONE, PANEL_TWO)
+    ]
+    remove = async_track_state_change_event(hass, climate_ids, events.append)
+
+    await hub._async_status_received(_system_status(hub, power=False))
+    await hass.async_block_till_done()
+    writes.clear()
+    events.clear()
+
+    await asyncio.sleep(0.1)
+    await hass.async_block_till_done()
+    remove()
+
+    assert {event.data["entity_id"] for event in events} == set(climate_ids)
+    assert [key for key in writes if key.endswith("_climate")] == [
+        f"thermostat_{PANEL_ONE}_climate",
+        f"thermostat_{PANEL_TWO}_climate",
+    ]
+    assert not any("automation_" in key for key in writes)
+
+
+async def test_reconnect_reannounces_climates_after_verified_system_state(
+    hass, refresh_capture, monkeypatch
+):
+    """A first verified state after reconnect refreshes room climates once."""
+    monkeypatch.setattr(climate_module, "ROOM_CONTROLS_REANNOUNCE_DELAY", 0.05)
+    hub, writes = refresh_capture
+    writes.clear()
+
+    hub.protocol_verified = False
+    hub._notify()
+    await hub._async_status_received(_system_status(hub, power=True))
+    await hass.async_block_till_done()
+    writes.clear()
+
+    await asyncio.sleep(0.1)
+    await hass.async_block_till_done()
+
+    assert [key for key in writes if key.endswith("_climate")] == [
+        f"thermostat_{PANEL_ONE}_climate",
+        f"thermostat_{PANEL_TWO}_climate",
+    ]
+    assert not any("automation_" in key for key in writes)
+
+
+async def test_repeated_panel_measurements_do_not_force_state_events(
+    hass, refresh_capture
+):
+    """Steady telemetry must not create repeated automation/history events."""
+    hub, _ = refresh_capture
+    await asyncio.sleep(1.1)
+    await hass.async_block_till_done()
+    entity_id = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{PANEL_ONE}_climate"
+    )
+    events = []
+    remove = async_track_state_change_event(hass, [entity_id], events.append)
+    for _ in range(3):
+        await hub._async_status_received(_thermostat_status(hub, PANEL_ONE))
+    await hass.async_block_till_done()
+    remove()
+    assert events == []
+
+
+async def test_panel_power_change_reannounces_only_that_climate(
+    hass, refresh_capture
+):
+    """A room switch gets one settled event even if its state is unchanged."""
+    hub, writes = refresh_capture
+    await asyncio.sleep(1.1)
+    await hass.async_block_till_done()
+    await hub._async_status_received(_thermostat_status(hub, PANEL_ONE, power=False))
+    await hass.async_block_till_done()
+    writes.clear()
+    entity_id = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{PANEL_ONE}_climate"
+    )
+    events = []
+    remove = async_track_state_change_event(hass, [entity_id], events.append)
+    await asyncio.sleep(1.1)
+    await hass.async_block_till_done()
+    remove()
+    assert writes == [f"thermostat_{PANEL_ONE}_climate"]
+    assert len(events) == 1
+    assert events[0].data["new_state"].state == "off"
+    assert events[0].data["new_state"].attributes["hvac_modes"] == ["off", "auto"]
+
+
+@pytest.fixture
+async def controlled_reannounces(hass, refresh_capture, monkeypatch):
+    """Control only the Climate timer; keep real HA entity writes and events."""
+    await asyncio.sleep(1.1)
+    await hass.async_block_till_done()
+    timers = []
+
+    def schedule(_hass, delay, action):
+        timer = Mock(action=action, delay=delay)
+        timers.append(timer)
+        return timer.cancel
+
+    monkeypatch.setattr(climate_module, "async_call_later", schedule)
+    return *refresh_capture, timers
+
+
+async def test_control_reannounce_coalesces_to_latest_room_state(
+    hass, controlled_reannounces
+):
+    """Rapid control changes leave one delayed notification for the final state."""
+    hub, writes, timers = controlled_reannounces
+    await hub._async_status_received(_system_status(hub, power=False))
+    await hass.async_block_till_done()
+    await hub._async_status_received(_system_status(hub, power=True, mode=2))
+    await hass.async_block_till_done()
+    writes.clear()
+    assert len(timers) == 4
+    for timer in timers[:2]:
+        timer.cancel.assert_called_once_with()
+    for timer in timers[2:]:
+        timer.cancel.assert_not_called()
+        timer.action(datetime.now(UTC))
+    await hass.async_block_till_done()
+
+    assert [key for key in writes if key.endswith("_climate")] == [
+        f"thermostat_{PANEL_ONE}_climate",
+        f"thermostat_{PANEL_TWO}_climate",
+    ]
+    assert hass.states.get(
+        _entity_id(hass, hub.entry.entry_id, "climate", f"thermostat_{PANEL_ONE}_climate")
+    ).state == "auto"
+
+
+async def test_telemetry_does_not_postpone_pending_control_reannounce(
+    hass, controlled_reannounces
+):
+    """Routine panel reports do not move a pending control reannounce deadline."""
+    hub, writes, timers = controlled_reannounces
+    await hub._async_status_received(_system_status(hub, power=False))
+    await hass.async_block_till_done()
+    for _ in range(3):
+        await hub._async_status_received(_thermostat_status(hub, PANEL_ONE))
+        await hass.async_block_till_done()
+    writes.clear()
+    assert len(timers) == 2
+    for timer in timers:
+        timer.cancel.assert_not_called()
+        timer.action(datetime.now(UTC))
+    await hass.async_block_till_done()
+    assert [key for key in writes if key.endswith("_climate")] == [
+        f"thermostat_{PANEL_ONE}_climate",
+        f"thermostat_{PANEL_TWO}_climate",
+    ]
+
+
+@pytest.mark.parametrize("mode", [3, 4])
+async def test_panel_power_change_in_forced_off_mode_still_reannounces_off(
+    hass, controlled_reannounces, mode
+):
+    hub, writes, timers = controlled_reannounces
+    await hub._async_status_received(_system_status(hub, power=True, mode=mode))
+    await hass.async_block_till_done()
+    for timer in timers:
+        timer.action(datetime.now(UTC))
+    timers.clear()
+    await hub._async_status_received(_thermostat_status(hub, PANEL_ONE, power=False))
+    await hass.async_block_till_done()
+    writes.clear()
+    assert len(timers) == 1
+    timers[0].action(datetime.now(UTC))
+    await hass.async_block_till_done()
+    assert writes == [f"thermostat_{PANEL_ONE}_climate"]
+    state = hass.states.get(
+        _entity_id(hass, hub.entry.entry_id, "climate", f"thermostat_{PANEL_ONE}_climate")
+    )
+    assert state.state == "off"
+    assert state.attributes["hvac_modes"] == ["off", "auto"]
+
+
+async def test_control_reannounce_is_cancelled_when_room_goes_unavailable(
+    hass, controlled_reannounces
+):
+    """A disconnect before the delay must not emit a fake recovered state."""
+    hub, writes, timers = controlled_reannounces
+    await hub._async_status_received(_system_status(hub, power=False))
+    await hass.async_block_till_done()
+    hub.protocol_verified = False
+    hub._notify()
+    await hass.async_block_till_done()
+    writes.clear()
+
+    assert len(timers) == 2
+    for timer in timers:
+        timer.cancel.assert_called_once_with()
+        # Even an already queued callback must not republish an offline room.
+        timer.action(datetime.now(UTC))
+    await hass.async_block_till_done()
+    assert writes == []
+    assert hass.states.get(
+        _entity_id(hass, hub.entry.entry_id, "climate", f"thermostat_{PANEL_ONE}_climate")
+    ).state == "unavailable"
+
+
+async def test_unload_cancels_pending_room_reannounces(hass, controlled_reannounces):
+    hub, writes, timers = controlled_reannounces
+    await hub._async_status_received(_system_status(hub, power=False))
+    await hass.async_block_till_done()
+    assert len(timers) == 2
+    assert await hass.config_entries.async_unload(hub.entry.entry_id)
+    await hass.async_block_till_done()
+    for timer in timers:
+        timer.cancel.assert_called_once_with()
+    assert not hub._listeners
+    writes.clear()
+    hub._notify()
+    assert writes == []
 
 
 async def test_completed_mode_transition_restores_hint_without_another_report(
