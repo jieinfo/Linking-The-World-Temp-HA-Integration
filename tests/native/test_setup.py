@@ -654,7 +654,7 @@ async def test_fake_controller_writes_multiple_status_frames_together(
     assert statuses == [b"first", b"second"]
 
 
-async def test_restart_preserves_dynamic_panel_identity_and_restores_unavailable(
+async def test_restart_preserves_dynamic_panel_identity_and_bootstraps_cached_measurements(
     hass, managed_integration, fake_controller, mock_config_entry
 ):
     """Reload retains panel identity but waits for a new controller report."""
@@ -664,6 +664,8 @@ async def test_restart_preserves_dynamic_panel_identity_and_restores_unavailable
     await fake_controller.async_send_status(_thermostat_status(first_runtime.hub, mac_hex))
     await _wait_for(lambda: mac_hex in first_runtime.hub.thermostats)
     await hass.async_block_till_done()
+    assert first_runtime.panel_registry.records[mac_hex].last_temperature == 24.6
+    assert first_runtime.panel_registry.records[mac_hex].last_humidity == 58
     entity_registry = er.async_get(hass)
     unique_id = f"{mock_config_entry.entry_id}_thermostat_{mac_hex}_climate"
     original_entity_id = entity_registry.async_get_entity_id("climate", DOMAIN, unique_id)
@@ -683,6 +685,15 @@ async def test_restart_preserves_dynamic_panel_identity_and_restores_unavailable
     assert reloaded is not first_runtime
     assert mac_hex in reloaded.hub.thermostats
     assert not reloaded.hub.thermostats[mac_hex].available
+    assert reloaded.hub.thermostats[mac_hex].current_temperature == 24.6
+    assert reloaded.hub.thermostats[mac_hex].humidity == 58
+    await hass.async_block_till_done()
+    restored_state = hass.states.get(original_entity_id)
+    assert restored_state is not None
+    assert restored_state.state == "off"
+    assert restored_state.attributes["current_temperature"] == 24.6
+    assert restored_state.attributes["current_humidity"] == 58
+    assert restored_state.attributes["assumed_state"] is True
     assert (
         entity_registry.async_get_entity_id("climate", DOMAIN, unique_id)
         == original_entity_id
@@ -697,6 +708,30 @@ async def test_restart_preserves_dynamic_panel_identity_and_restores_unavailable
     await hass.async_block_till_done()
     assert reloaded.hub._runner is None
     await fake_controller.async_stop()
+
+
+async def test_cached_panel_becomes_unavailable_after_controller_disconnect(
+    hass, managed_integration, fake_controller, mock_config_entry
+):
+    """Startup cache is withdrawn after the controller has a definitive disconnect."""
+    hub = managed_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_system_status(hub))
+    await fake_controller.async_send_status(_thermostat_status(hub, mac_hex))
+    await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
+    entity_registry = er.async_get(hass)
+    entity_id = entity_registry.async_get_entity_id(
+        "climate",
+        DOMAIN,
+        f"{mock_config_entry.entry_id}_thermostat_{mac_hex}_climate",
+    )
+    assert entity_id is not None
+
+    await hub._async_disconnect()
+    await hass.async_block_till_done()
+
+    assert not hub.startup_cache_active
+    assert hass.states.get(entity_id).state == "unavailable"
 
 
 @pytest.mark.skipif(

@@ -1,5 +1,12 @@
 # Linking The World Temp HA changelog
 
+## 1.5.2 - Restore room humidity after HA restart
+
+- 持久化每个房间面板最后一次有效温度和湿度，兼容旧版面板注册表数据。
+- HA 重启后的首次连接阶段使用缓存值创建温控器能力，HomeKit 无需手动重载即可保留湿度特征。
+- 主机协议确认后切换为实时状态；连接明确断开后撤销启动缓存状态并恢复正常不可用语义。
+- 增加缓存校验、冷启动、断开恢复和存储迁移测试。
+
 ## 1.5.1 - Independent room Climate control
 
 - 房间 Climate 改为只根据对应温控面板自身的主机上报决定“关闭/自动”，不再因科技系统总控

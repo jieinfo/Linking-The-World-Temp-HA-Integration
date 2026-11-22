@@ -740,6 +740,8 @@ async def test_removing_entry_clears_entry_linked_connection_repairs(
             available=False,
             monitored_absence_seconds=STALE_PANEL_SECONDS,
             checkpoint_utc=None,
+            last_temperature=None,
+            last_humidity=None,
         ),
         "客餐厅",
     )
