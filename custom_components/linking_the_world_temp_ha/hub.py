@@ -166,6 +166,8 @@ class LinkingTempHub:
         self._pending: dict[str, PendingCommand] = {}
         self._queued: dict[str, list[QueuedCommand]] = {}
         self._has_attempted_connection = False
+        self._startup_cache_window_open = True
+        self._startup_cached_macs: set[str] = set()
         self._session_authenticated = False
         self._reauth_required = False
         self._reauth_watcher: asyncio.Task[None] | None = None
@@ -235,6 +237,26 @@ class LinkingTempHub:
             and self.connected
             and self.protocol_verified
         )
+
+    @property
+    def startup_cache_active(self) -> bool:
+        """Expose restored measurements only until the first session outcome."""
+        if (
+            not self._startup_cache_window_open
+            or self.protocol_verified
+            or self.protocol_status == "disconnected"
+        ):
+            return False
+        return not self._has_attempted_connection or self.health.stage in {
+            ConnectionStage.CONNECTING,
+            ConnectionStage.HANDSHAKING,
+            ConnectionStage.AUTHENTICATING,
+            ConnectionStage.READY,
+        }
+
+    def has_startup_cached_measurements(self, mac_hex: str) -> bool:
+        """Return whether this panel had measurements before this HA run."""
+        return mac_hex in self._startup_cached_macs
 
     @property
     def control_permission(self) -> str:
@@ -828,6 +850,7 @@ class LinkingTempHub:
         was_authenticated = getattr(self, "_session_authenticated", False)
         self._session_authenticated = False
         self._mark_stage(ConnectionStage.DISCONNECTED)
+        self._startup_cache_window_open = False
         self.protocol_verified = False
         self.protocol_status = "disconnected"
         self._last_valid_status_at = None
@@ -1333,6 +1356,13 @@ class LinkingTempHub:
             self.thermostats[mac_hex] = thermostat
             if measurements_valid:
                 self._update_filtered(thermostat)
+                assert thermostat.current_temperature is not None
+                assert thermostat.humidity is not None
+                await self.panel_registry.async_note_valid_measurements(
+                    mac_hex,
+                    thermostat.current_temperature,
+                    thermostat.humidity,
+                )
             self._confirm_pending(
                 f"thermostat_{mac_hex}",
                 {
@@ -1411,6 +1441,7 @@ class LinkingTempHub:
     async def _async_forget_panel_locked(self, mac_hex: str) -> None:
         """Forget one panel while the panel lifecycle lock is held."""
         await self.panel_registry.async_delete_panel(mac_hex)
+        self._startup_cached_macs.discard(mac_hex)
         self.thermostats.pop(mac_hex, None)
         self.filtered.pop(mac_hex, None)
 
@@ -1453,8 +1484,12 @@ class LinkingTempHub:
         self.room_names.update(self.panel_registry.room_names)
         for record in self.panel_registry.records.values():
             mac = parse_device_mac(record.mac_hex)
+            if record.last_temperature is not None and record.last_humidity is not None:
+                self._startup_cached_macs.add(mac.hex())
             self.thermostats[mac.hex()] = ThermostatState(
                 mac=mac,
                 room_id=record.room_id,
+                current_temperature=record.last_temperature,
+                humidity=record.last_humidity,
                 available=False,
             )

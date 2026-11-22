@@ -47,6 +47,8 @@ async def test_load_migrates_v1_panels_without_resetting_identity(hass, hass_sto
     assert record.monitored_absence_seconds == 0
     assert record.checkpoint_utc is None
     assert not record.available
+    assert record.last_temperature is None
+    assert record.last_humidity is None
     assert "not-a-mac" not in registry.records
 
 
@@ -225,10 +227,60 @@ async def test_load_skips_bad_v2_records_without_losing_valid_panel(hass, hass_s
 
     assert set(registry.records) == {"ff00ffffffff01ff"}
     assert registry.records["ff00ffffffff01ff"].monitored_absence_seconds == 3600
+    assert registry.records["ff00ffffffff01ff"].last_temperature is None
+    assert registry.records["ff00ffffffff01ff"].last_humidity is None
 
 
-async def test_flush_writes_v2_utc_records_for_restart(hass, hass_storage):
-    """A clean unload can persist a debounced update before HA exits."""
+async def test_valid_measurements_survive_flush_and_reload(hass, hass_storage):
+    """The latest valid panel measurements are available after HA restarts."""
+    entry_id = "measurement-cache"
+    now = utc("2026-08-24T00:00:00")
+    registry = PanelRegistry(hass, entry_id, clock=lambda: now)
+    await registry.async_load()
+    await registry.async_note_panel_report("ff00ffffffff01ff", "r0100", now)
+
+    assert await registry.async_note_valid_measurements(
+        "ff00ffffffff01ff", 17.6, 47
+    )
+    assert not await registry.async_note_valid_measurements(
+        "ff00ffffffff01ff", 17.6, 47
+    )
+    await registry.async_flush()
+
+    restarted = PanelRegistry(hass, entry_id, clock=lambda: now)
+    await restarted.async_load()
+    record = restarted.records["ff00ffffffff01ff"]
+    assert record.last_temperature == 17.6
+    assert record.last_humidity == 47
+    assert record.available
+
+
+async def test_invalid_measurements_do_not_replace_valid_cache(hass):
+    """Cache updates reject invalid values without changing prior valid data."""
+    registry = PanelRegistry(hass, "measurement-validation")
+    await registry.async_note_panel_report(
+        "ff00ffffffff01ff", "r0100", utc("2026-08-24T00:00:00")
+    )
+    assert await registry.async_note_valid_measurements(
+        "ff00ffffffff01ff", 17.6, 47
+    )
+
+    with pytest.raises(ValueError, match="temperature"):
+        await registry.async_note_valid_measurements(
+            "ff00ffffffff01ff", float("nan"), 47
+        )
+    with pytest.raises(ValueError, match="humidity"):
+        await registry.async_note_valid_measurements(
+            "ff00ffffffff01ff", 17.6, 101
+        )
+
+    record = registry.records["ff00ffffffff01ff"]
+    assert record.last_temperature == 17.6
+    assert record.last_humidity == 47
+
+
+async def test_flush_writes_v3_utc_records_for_restart(hass, hass_storage):
+    """A clean unload persists lifecycle and measurement data before HA exits."""
     entry_id = "flush-v2"
     key = f"linking_the_world_temp_ha.{entry_id}.panels"
     now = utc("2026-08-24T00:00:00")
@@ -239,9 +291,11 @@ async def test_flush_writes_v2_utc_records_for_restart(hass, hass_storage):
     await registry.async_flush()
 
     stored = hass_storage[key]
-    assert stored["version"] == 2
+    assert stored["version"] == 3
     assert stored["data"]["panels"][0]["mac_hex"] == "ff00ffffffff01ff"
     assert stored["data"]["panels"][0]["first_seen_utc"].endswith("+00:00")
+    assert stored["data"]["panels"][0]["last_temperature"] is None
+    assert stored["data"]["panels"][0]["last_humidity"] is None
 
     restarted = PanelRegistry(hass, entry_id, clock=lambda: now)
     await restarted.async_load()

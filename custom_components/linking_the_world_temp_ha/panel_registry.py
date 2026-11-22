@@ -14,7 +14,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
 
-PANEL_STORE_VERSION = 2
+PANEL_STORE_VERSION = 3
 STALE_PANEL_SECONDS = 30 * 24 * 60 * 60
 SAVE_DELAY_SECONDS = 1
 
@@ -41,10 +41,12 @@ class PanelRecord:
     available: bool
     monitored_absence_seconds: float
     checkpoint_utc: datetime | None
+    last_temperature: float | None
+    last_humidity: int | None
 
 
 class _PanelStore(Store[dict[str, Any]]):
-    """Store v2 panel records while preserving the original storage key."""
+    """Store versioned panel records while preserving the original key."""
 
     def __init__(
         self, hass: HomeAssistant, key: str, clock: Callable[[], datetime]
@@ -55,12 +57,27 @@ class _PanelStore(Store[dict[str, Any]]):
     async def _async_migrate_func(
         self, old_major_version: int, _old_minor_version: int, old_data: Any
     ) -> dict[str, Any]:
-        """Convert the former v1 room/panel list without changing identities."""
-        if old_major_version != 1 or not isinstance(old_data, dict):
+        """Migrate older records without changing panel identities."""
+        if old_major_version not in (1, 2) or not isinstance(old_data, dict):
             raise NotImplementedError
         now_utc = _utc(self._clock())
         rooms = old_data.get("rooms", {})
         panels = old_data.get("panels", [])
+        if old_major_version == 2:
+            migrated_panels = []
+            for panel in panels if isinstance(panels, list) else []:
+                if isinstance(panel, dict):
+                    migrated_panels.append(
+                        {
+                            **panel,
+                            "last_temperature": panel.get("last_temperature"),
+                            "last_humidity": panel.get("last_humidity"),
+                        }
+                    )
+            return {
+                "rooms": rooms if isinstance(rooms, dict) else {},
+                "panels": migrated_panels,
+            }
         return {
             "rooms": rooms if isinstance(rooms, dict) else {},
             "panels": [
@@ -72,6 +89,8 @@ class _PanelStore(Store[dict[str, Any]]):
                     "available": False,
                     "monitored_absence_seconds": 0.0,
                     "checkpoint_utc": None,
+                    "last_temperature": None,
+                    "last_humidity": None,
                 }
                 for panel in panels
                 if isinstance(panel, dict)
@@ -133,7 +152,7 @@ class PanelRegistry:
         self._checkpoint_monotonic: float | None = None
 
     async def async_load(self) -> None:
-        """Restore valid v2 records, isolating individual damaged records."""
+        """Restore valid records, isolating individual damaged records."""
         stored = await self._store.async_load() or {}
         if not isinstance(stored, dict):
             return
@@ -200,6 +219,8 @@ class PanelRegistry:
                 available=True,
                 monitored_absence_seconds=0.0,
                 checkpoint_utc=now_utc if self._monitoring_active else None,
+                last_temperature=None,
+                last_humidity=None,
             )
             self.records[normalized_mac] = record
         else:
@@ -234,6 +255,40 @@ class PanelRegistry:
         if record is None or record.available is available:
             return False
         record.available = available
+        self._schedule_save()
+        return True
+
+    async def async_note_valid_measurements(
+        self, mac_hex: str, temperature: float, humidity: int
+    ) -> bool:
+        """Persist one panel's last valid measurements without changing availability."""
+        normalized_mac = _normalize_mac(mac_hex)
+        if normalized_mac is None:
+            raise ValueError("Panel MAC must contain 16 hexadecimal characters")
+        if (
+            isinstance(temperature, bool)
+            or not isinstance(temperature, (int, float))
+            or not isfinite(temperature)
+            or not 0 <= temperature <= 60
+        ):
+            raise ValueError("Panel temperature must be a finite value from 0 to 60")
+        if (
+            isinstance(humidity, bool)
+            or not isinstance(humidity, int)
+            or not 0 <= humidity <= 100
+        ):
+            raise ValueError("Panel humidity must be an integer from 0 to 100")
+        record = self.records.get(normalized_mac)
+        if record is None:
+            return False
+        normalized_temperature = float(temperature)
+        if (
+            record.last_temperature == normalized_temperature
+            and record.last_humidity == humidity
+        ):
+            return False
+        record.last_temperature = normalized_temperature
+        record.last_humidity = humidity
         self._schedule_save()
         return True
 
@@ -365,4 +420,25 @@ class PanelRegistry:
             available=item["available"],
             monitored_absence_seconds=float(absence),
             checkpoint_utc=checkpoint_utc,
+            last_temperature=_parse_temperature(item.get("last_temperature")),
+            last_humidity=_parse_humidity(item.get("last_humidity")),
         )
+
+
+def _parse_temperature(value: object) -> float | None:
+    """Parse a persisted credible room temperature, ignoring bad cache data."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not isfinite(value)
+        or not 0 <= value <= 60
+    ):
+        return None
+    return float(value)
+
+
+def _parse_humidity(value: object) -> int | None:
+    """Parse a persisted integer room humidity, ignoring bad cache data."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+        return None
+    return value

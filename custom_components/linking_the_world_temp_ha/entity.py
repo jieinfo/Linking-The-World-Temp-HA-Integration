@@ -56,7 +56,24 @@ class LinkingThermostatEntity(LinkingTempEntity):
     @property
     def available(self) -> bool:
         thermostat = self.hub.thermostats.get(self.mac_hex)
-        return bool(self.hub.available and thermostat and thermostat.available)
+        if self.hub.available and thermostat and thermostat.available:
+            return True
+        return bool(
+            self.hub.startup_cache_active
+            and self.hub.has_startup_cached_measurements(self.mac_hex)
+            and thermostat
+            and thermostat.current_temperature is not None
+            and thermostat.humidity is not None
+        )
+
+    @property
+    def assumed_state(self) -> bool:
+        """Mark startup values as cached until the controller confirms them."""
+        return bool(
+            self.hub.startup_cache_active
+            and not self.hub.available
+            and self.hub.has_startup_cached_measurements(self.mac_hex)
+        )
 
     @property
     def update_scopes(self) -> frozenset[str]:
